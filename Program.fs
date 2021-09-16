@@ -87,7 +87,23 @@ let main argv =
                 returnCode
             with
             | _ -> 1
-        | List -> 0
+        | List -> 
+            try
+                let procInfos = 
+                    Process.GetProcessesByName("wsfscservice")
+                    |> Array.map (fun proc -> sprintf "version: %s; path: %s" proc.MainModule.FileVersionInfo.FileVersion proc.MainModule.FileName)
+                if procInfos.Length = 0 then
+                    printfn "There are no wsfscservices running"
+                else
+                    printfn """The following wsfscservice versions are running:
+
+  %s""" 
+                      (String.Join(Environment.NewLine + "  ", procInfos))
+                0
+            with
+            | _ ->
+                printfn "Couldn't read processes"
+                1
     with
     | :? Argu.ArguParseException as ex -> 
         printfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)
