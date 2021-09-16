@@ -19,48 +19,76 @@
 // $end{copyright}
 open System
 open System.Diagnostics
+open Argu
+
+type Argument =
+    | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
+    | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
+    | [<CliPrefix(CliPrefix.None); SubCommand>] List
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Start _ -> "Starts wsfscservice with the given version."
+            | Stop _ -> "Sends a stop signal for the wsfscservice with the given version. If no version given it's all running instances. If --force given kills the process instead of stop signal."
+            | List -> "Lists running wsfscservice versions."
+and StartArguments =
+    | Version of ver:string
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Version _ -> "wsfscservice version"
+
+and StopArguments =
+    | Version of ver:string
+    | Force
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Version _ -> "wsfscservice version. If empty all running instances"
+            | Force -> "kills the service instead of sending stop signal"
 
 [<EntryPoint>]
 let main argv =
-    if argv.Length = 0 then
-        printfn """
-dotnet-ws is a dotnet tool for WebSharper. Available commands:
-  stop       Stops all running wsfscservice instances
-"""
-        1
-    elif argv.Length > 1 then
-        (printfn """
-Wrong number of parameters (%i)
-
-dotnet-ws is a dotnet tool for WebSharper. Available commands:
-  stop       Stops all running wsfscservice instances
-""" argv.Length)
-        1
-    elif argv.[0] <> "stop" then
-        printfn """
-Unrecognized parameter
-
-dotnet-ws is a dotnet tool for WebSharper. Available commands:
-  stop       Stops all running wsfscservice instances
-"""
-        1
-    else 
-        let tryKill (returnCode, successfulErrorPrint) (x: Process) =
-            try
-                x.Kill()
-                printfn "Stopped wsfscservice with PID: (%i)" x.Id
-                (returnCode, successfulErrorPrint)
-            with
-            | _ ->
+    let parser = ArgumentParser.Create<Argument>(programName = "dotnet-ws.exe", helpTextMessage = "dotnet-ws is a dotnet tool for WebSharper", checkStructure = true)
+    try
+        let result = parser.Parse argv
+        let subCommand = result.GetSubCommand()
+        match subCommand with
+        | Start _ -> 0
+        | Stop stopParams -> 
+            let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
                 try
-                    printfn "Couldn't kill process with PID: (%i)" x.Id
-                    (1, successfulErrorPrint)
+                    let killOrSend (x: Process) = 
+                        if stopParams.Contains Force then
+                            x.Kill()
+                            printfn "Stopped wsfscservice with PID: (%i)" x.Id
+                    let version = stopParams.TryGetResult Version
+                    match version with
+                    | Some v -> 
+                        if proc.MainModule.FileVersionInfo.FileVersion = v then
+                            killOrSend proc
+                    | None ->
+                        killOrSend proc
+                    (returnCode, successfulErrorPrint)
                 with
-                | _ -> (1, false)
-        try
-            let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (0, true)
-            if successfulErrorPrint |> not then
-                printfn "Couldn't read processes"
-            returnCode
-        with
-        | _ -> 1
+                | _ ->
+                    try
+                        printfn "Couldn't kill process with PID: (%i)" proc.Id
+                        (1, successfulErrorPrint)
+                    with
+                    | _ -> (1, false)
+            try
+                let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (0, true)
+                if successfulErrorPrint |> not then
+                    printfn "Couldn't read processes"
+                returnCode
+            with
+            | _ -> 1
+        | List -> 0
+    with
+    | :? Argu.ArguParseException as ex -> 
+        printfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)
+        1
