@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "dotnet-ws": {
+      "commandName": "Project",
+      "commandLineArgs": "stop"
+    }
+  }
+}

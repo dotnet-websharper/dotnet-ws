@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net5.0</TargetFramework>
+    <RootNamespace>dotnet_ws</RootNamespace>
+    <WarnOn>3390;$(WarnOn)</WarnOn>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-ws</ToolCommandName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include=".gitignore" />
+    <None Include="LICENSE.md" />
+    <None Include="README.md" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup />
+
+</Project>
