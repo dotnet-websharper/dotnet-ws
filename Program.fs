@@ -79,8 +79,7 @@ let main argv =
                             System.IO.Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE"), ".nuget", "packages")
                         else
                             //~/.nuget/packages
-                            //System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME"), ".nuget", "packages")
-                            System.IO.Path.Combine("~", ".nuget", "packages")
+                            System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME"), ".nuget", "packages")
                 let fsharpFolder = System.IO.Path.Combine(nugetRoot, "websharper.fsharp")
                 try
                     let version =
