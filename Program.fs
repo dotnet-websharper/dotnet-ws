@@ -63,6 +63,8 @@ and StopArguments =
             | Version _ -> "wsfscservice version. If empty all running instances"
             | Force -> "kills the service instead of sending stop signal"
 
+type ArgsType = {args: string array}
+
 [<EntryPoint>]
 let main argv =
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet-ws.exe", helpTextMessage = "dotnet-ws is a dotnet tool for WebSharper", checkStructure = true)
