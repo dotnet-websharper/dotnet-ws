@@ -16,10 +16,9 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
 
-  <ItemGroup />
-
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.1.1" />
+    <PackageReference Include="Fake.Core.SemVer" Version="5.20.4" />
   </ItemGroup>
 
 </Project>
