@@ -1,6 +1,6 @@
-"# dotnet-ws" 
+# dotnet-ws 
  
-```shell
+```
 dotnet-ws is a dotnet tool for WebSharper
 
 USAGE: dotnet-ws.exe [--help] [<subcommand> [<options>]]

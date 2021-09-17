@@ -21,6 +21,10 @@ open System
 open System.Diagnostics
 open Argu
 open Fake.Core
+open System.IO.Pipes
+open System.IO
+open System.Runtime.Serialization.Formatters.Binary
+open System.Text
 
 type RidEnum =
     | ``win-x64`` = 1
@@ -58,6 +62,8 @@ and StopArguments =
             | Version _ -> "wsfscservice version. If empty all running instances"
             | Force -> "kills the service instead of sending stop signal"
 
+type ArgsType = {args: string array}
+
 [<EntryPoint>]
 let main argv =
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet-ws.exe", helpTextMessage = "dotnet-ws is a dotnet tool for WebSharper", checkStructure = true)
@@ -71,32 +77,27 @@ let main argv =
             try
                 let nugetRoot = 
                     match Environment.GetEnvironmentVariable("NUGET_PACKAGES") |> Option.ofObj with
-                    | Some x ->
-                        x
-                    | None -> 
-                        if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
-                            //%USERPROFILE%\.nuget\packages
-                            System.IO.Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE"), ".nuget", "packages")
-                        else
-                            //~/.nuget/packages
-                            System.IO.Path.Combine(Environment.GetEnvironmentVariable("HOME"), ".nuget", "packages")
-                let fsharpFolder = System.IO.Path.Combine(nugetRoot, "websharper.fsharp")
+                    | Some x -> x
+                    //%USERPROFILE%\.nuget\packages win
+                    //~/.nuget/packages linux
+                    | None -> Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages")
+                let fsharpFolder = Path.Combine(nugetRoot, "websharper.fsharp")
                 try
                     let version =
                         match startParams.TryGetResult StartArguments.Version with
                         | Some semver -> semver
                         | None ->
-                            System.IO.Directory.EnumerateDirectories(fsharpFolder)
+                            Directory.EnumerateDirectories(fsharpFolder)
                             |> Seq.map (fun x ->
-                                let justFolder = System.IO.DirectoryInfo(x).Name
+                                let justFolder = DirectoryInfo(x).Name
                                 SemVer.parse(justFolder))
                             |> Seq.max
                             |> (fun x -> x.ToString())
                     // start a detached wsfscservice.exe. Platform specific.
                     let cmdName = if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
                                       "wsfscservice_start.cmd" else "wsfscservice_start.sh"
-                    let cmdFullPath = System.IO.Path.Combine(fsharpFolder, version, "tools", "net5.0", ridString, cmdName)
-                    if System.IO.File.Exists(cmdFullPath) |> not then
+                    let cmdFullPath = Path.Combine(fsharpFolder, version, "tools", "net5.0", ridString, cmdName)
+                    if File.Exists(cmdFullPath) |> not then
                         failwith "dummy" // It will become "Couldn't find wsfscservice_start"
                     let startInfo = ProcessStartInfo(cmdFullPath)
                     startInfo.CreateNoWindow <- true
@@ -128,6 +129,36 @@ let main argv =
                         if stopParams.Contains Force then
                             x.Kill()
                             printfn "Stopped wsfscservice with PID: (%i)" x.Id
+                        else
+                            let md5 = System.Security.Cryptography.MD5.Create()
+
+                            let hashPath (fullPath: string) =
+                                let data =
+                                    fullPath.ToLower()
+                                    |> Encoding.UTF8.GetBytes
+                                    |> md5.ComputeHash
+                                (StringBuilder(), data)
+                                ||> Array.fold (fun sb b -> sb.Append(b.ToString("x2")))
+                                |> string
+                            let location = IO.Path.GetDirectoryName(x.MainModule.FileName)
+                            let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
+                            let serverName = "." // local machine server name
+                            use clientPipe = new NamedPipeClientStream( serverName, //server name, local machine is .
+                                                 pipeName, // name of the pipe,
+                                                 PipeDirection.InOut, // direction of the pipe 
+                                                 PipeOptions.WriteThrough // the operation will not return the control until the write is completed
+                                                 ||| PipeOptions.Asynchronous)
+                            let bf = new BinaryFormatter();
+                            use ms = new MemoryStream()
+                            // args going binary serialized to the service.
+                            let stopNextCompilations: ArgsType = {args = [|"exit"|]}
+                            bf.Serialize(ms, stopNextCompilations);
+                            ms.Flush();
+                            ms.Position <- 0L
+                            clientPipe.Connect()
+                            ms.CopyToAsync(clientPipe) |> Async.AwaitTask |> Async.RunSynchronously
+                            clientPipe.Flush()
+                            printfn "Stop signal sent to wsfscservice with PID: (%i)" x.Id
                     match stopParams.TryGetResult Version with
                     | Some v -> 
                         if proc.MainModule.FileVersionInfo.FileVersion = v then
