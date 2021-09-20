@@ -22,4 +22,8 @@
     <PackageReference Include="Fake.Core.SemVer" Version="5.20.4" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="WebSharper.Compiler\WebSharper.Compiler.fsproj" />
+  </ItemGroup>
+
 </Project>

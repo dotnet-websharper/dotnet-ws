@@ -25,6 +25,7 @@ open System.IO.Pipes
 open System.IO
 open System.Runtime.Serialization.Formatters.Binary
 open System.Text
+open WebSharper.Compiler.WsFscServiceCommon
 
 type RidEnum =
     | ``win-x64`` = 1
@@ -61,8 +62,6 @@ and StopArguments =
             match s with
             | Version _ -> "wsfscservice version. If empty all running instances"
             | Force -> "kills the service instead of sending stop signal"
-
-type ArgsType = {args: string array}
 
 [<EntryPoint>]
 let main argv =
@@ -130,16 +129,6 @@ let main argv =
                             x.Kill()
                             printfn "Stopped wsfscservice with PID: (%i)" x.Id
                         else
-                            let md5 = System.Security.Cryptography.MD5.Create()
-
-                            let hashPath (fullPath: string) =
-                                let data =
-                                    fullPath.ToLower()
-                                    |> Encoding.UTF8.GetBytes
-                                    |> md5.ComputeHash
-                                (StringBuilder(), data)
-                                ||> Array.fold (fun sb b -> sb.Append(b.ToString("x2")))
-                                |> string
                             let location = IO.Path.GetDirectoryName(x.MainModule.FileName)
                             let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
                             let serverName = "." // local machine server name
