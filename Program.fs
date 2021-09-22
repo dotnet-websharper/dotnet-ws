@@ -20,6 +20,17 @@
 open System
 open System.Diagnostics
 open Argu
+open Fake.Core
+open System.IO.Pipes
+open System.IO
+open System.Runtime.Serialization.Formatters.Binary
+open System.Text
+open WebSharper.Compiler.WsFscServiceCommon
+
+type RidEnum =
+    | ``win-x64`` = 1
+    | ``linux-x64`` = 2
+    | ``linux-musl-x64`` = 3
 
 type Argument =
     | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
@@ -29,20 +40,22 @@ type Argument =
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Start _ -> "Starts wsfscservice with the given version."
+            | Start _ -> "Starts wsfscservice with the given RID (Runtime Identifier) (win-x64 or linux-x64 or linux-musl-x64). And version. If no value given for version, the latest will be used."
             | Stop _ -> "Sends a stop signal for the wsfscservice with the given version. If no version given it's all running instances. If --force given kills the process instead of stop signal."
             | List -> "Lists running wsfscservice versions."
 and StartArguments =
-    | Version of ver:string
+    | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
+    | [<AltCommandLine("-v")>] Version of semver:string
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Version _ -> "wsfscservice version"
+            | RID _ -> "RID must be one of win-x64, linux-x64, linux-musl-x64."
+            | Version _ -> "wsfscservice version. If no value given, the latest will be used."
 
 and StopArguments =
-    | Version of ver:string
-    | Force
+    | [<AltCommandLine("-v")>] Version of semver:string
+    | [<AltCommandLine("-f")>] Force
 
     interface IArgParserTemplate with
         member s.Usage =
@@ -57,7 +70,57 @@ let main argv =
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
         match subCommand with
-        | Start _ -> 0
+        | Start startParams ->
+            let rid = startParams.GetResult RID
+            let ridString = rid.ToString()
+            try
+                let nugetRoot = 
+                    match Environment.GetEnvironmentVariable("NUGET_PACKAGES") |> Option.ofObj with
+                    | Some x -> x
+                    //%USERPROFILE%\.nuget\packages win
+                    //~/.nuget/packages linux
+                    | None -> Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages")
+                let fsharpFolder = Path.Combine(nugetRoot, "websharper.fsharp")
+                try
+                    let version =
+                        match startParams.TryGetResult StartArguments.Version with
+                        | Some semver -> semver
+                        | None ->
+                            Directory.EnumerateDirectories(fsharpFolder)
+                            |> Seq.map (fun x ->
+                                let justFolder = DirectoryInfo(x).Name
+                                SemVer.parse(justFolder))
+                            |> Seq.max
+                            |> (fun x -> x.ToString())
+                    // start a detached wsfscservice.exe. Platform specific.
+                    let cmdName = if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
+                                      "wsfscservice_start.cmd" else "wsfscservice_start.sh"
+                    let cmdFullPath = Path.Combine(fsharpFolder, version, "tools", "net5.0", ridString, cmdName)
+                    if File.Exists(cmdFullPath) |> not then
+                        failwith "dummy" // It will become "Couldn't find wsfscservice_start"
+                    let startInfo = ProcessStartInfo(cmdFullPath)
+                    startInfo.CreateNoWindow <- true
+                    startInfo.UseShellExecute <- false
+                    startInfo.WindowStyle <- ProcessWindowStyle.Hidden
+                    try
+                        Process.Start(startInfo) |> ignore
+                        printfn "version: %s; path: %s Started" version cmdFullPath
+                        0
+                    with ex ->
+                        printfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
+                        1
+                with
+                | :? Argu.ArguParseException ->
+                    reraise()
+                | _ ->
+                    printfn "Couldn't find wsfscservice_start"
+                    1
+            with
+            | :? Argu.ArguParseException ->
+                reraise()
+            | _ ->
+                printfn "Couldn't find nuget packages root folder"
+                1
         | Stop stopParams -> 
             let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
                 try
@@ -65,8 +128,27 @@ let main argv =
                         if stopParams.Contains Force then
                             x.Kill()
                             printfn "Stopped wsfscservice with PID: (%i)" x.Id
-                    let version = stopParams.TryGetResult Version
-                    match version with
+                        else
+                            let location = IO.Path.GetDirectoryName(x.MainModule.FileName)
+                            let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
+                            let serverName = "." // local machine server name
+                            use clientPipe = new NamedPipeClientStream( serverName, //server name, local machine is .
+                                                 pipeName, // name of the pipe,
+                                                 PipeDirection.InOut, // direction of the pipe 
+                                                 PipeOptions.WriteThrough // the operation will not return the control until the write is completed
+                                                 ||| PipeOptions.Asynchronous)
+                            let bf = new BinaryFormatter();
+                            use ms = new MemoryStream()
+                            // args going binary serialized to the service.
+                            let stopNextCompilations: ArgsType = {args = [|"exit"|]}
+                            bf.Serialize(ms, stopNextCompilations);
+                            ms.Flush();
+                            ms.Position <- 0L
+                            clientPipe.Connect()
+                            ms.CopyToAsync(clientPipe) |> Async.AwaitTask |> Async.RunSynchronously
+                            clientPipe.Flush()
+                            printfn "Stop signal sent to wsfscservice with PID: (%i)" x.Id
+                    match stopParams.TryGetResult Version with
                     | Some v -> 
                         if proc.MainModule.FileVersionInfo.FileVersion = v then
                             killOrSend proc
@@ -87,7 +169,23 @@ let main argv =
                 returnCode
             with
             | _ -> 1
-        | List -> 0
+        | List -> 
+            try
+                let procInfos = 
+                    Process.GetProcessesByName("wsfscservice")
+                    |> Array.map (fun proc -> sprintf "version: %s; path: %s" proc.MainModule.FileVersionInfo.FileVersion proc.MainModule.FileName)
+                if procInfos.Length = 0 then
+                    printfn "There are no wsfscservices running"
+                else
+                    printfn """The following wsfscservice versions are running:
+
+  %s""" 
+                        (String.Join(Environment.NewLine + "  ", procInfos))
+                0
+            with
+            | _ ->
+                printfn "Couldn't read processes"
+                1
     with
     | :? Argu.ArguParseException as ex -> 
         printfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)

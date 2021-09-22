@@ -7,6 +7,7 @@
     <WarnOn>3390;$(WarnOn)</WarnOn>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>dotnet-ws</ToolCommandName>
+	<EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,10 +17,13 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
 
-  <ItemGroup />
-
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.1.1" />
+    <PackageReference Include="Fake.Core.SemVer" Version="5.20.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="WebSharper.Compiler\WebSharper.Compiler.fsproj" />
   </ItemGroup>
 
 </Project>
