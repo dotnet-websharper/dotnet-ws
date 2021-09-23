@@ -12,6 +12,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <Description>Dotnet tool to manage WebSharper related projects</Description>
+	  <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,10 +22,13 @@
     <Compile Include="Program.fs" />
   </ItemGroup>
 
-  <ItemGroup />
-
   <ItemGroup>
     <PackageReference Include="Argu" Version="6.1.1" />
+    <PackageReference Include="Fake.Core.SemVer" Version="5.20.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="WebSharper.Compiler\WebSharper.Compiler.fsproj" />
   </ItemGroup>
 
 </Project>
