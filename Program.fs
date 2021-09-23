@@ -17,6 +17,7 @@
 // permissions and limitations under the License.
 //
 // $end{copyright}
+#nowarn "44"
 open System
 open System.Diagnostics
 open Argu
@@ -26,6 +27,30 @@ open System.IO
 open System.Runtime.Serialization.Formatters.Binary
 open System.Text
 open WebSharper.Compiler.WsFscServiceCommon
+open System.Threading
+
+
+let (|StdOut|_|) (str: string) =
+    if str.StartsWith("n: ") then
+        str.Substring(3) |> Some
+    else
+        None
+
+let (|StdErr|_|) (str: string) =
+    if str.StartsWith("e: ") then
+        str.Substring(3) |> Some
+    else
+        None
+
+let (|Finish|_|) (str: string) =
+    if str.StartsWith("x: ") then
+        let trimmed = 
+            str.Substring(3)
+        trimmed
+        |> System.Int32.Parse
+        |> Some
+    else
+        None
 
 type RidEnum =
     | ``win-x64`` = 1
@@ -36,6 +61,7 @@ type Argument =
     | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
     | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
+    | [<CliPrefix(CliPrefix.None); SubCommand>] Build
 
     interface IArgParserTemplate with
         member s.Usage =
@@ -43,6 +69,7 @@ type Argument =
             | Start _ -> "Starts wsfscservice with the given RID (Runtime Identifier) (win-x64 or linux-x64 or linux-musl-x64). And version. If no value given for version, the latest will be used."
             | Stop _ -> "Sends a stop signal for the wsfscservice with the given version. If no version given it's all running instances. If --force given kills the process instead of stop signal."
             | List -> "Lists running wsfscservice versions."
+            | Build -> "Build WebSharper project in the current folder. Using cached build information where possible."
 and StartArguments =
     | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -69,6 +96,30 @@ let main argv =
     try
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
+
+        let clientPipeForLocation (location:string) =
+            let location = IO.Path.GetDirectoryName(location)
+            let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
+            let serverName = "." // local machine server name
+            new NamedPipeClientStream( serverName, //server name, local machine is .
+                                 pipeName, // name of the pipe,
+                                 PipeDirection.InOut, // direction of the pipe 
+                                 PipeOptions.WriteThrough // the operation will not return the control until the write is completed
+                                 ||| PipeOptions.Asynchronous)
+
+        let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
+            let bf = new BinaryFormatter();
+            use ms = new MemoryStream()
+            // args going binary serialized to the service.
+            bf.Serialize(ms, message);
+            ms.Flush();
+            ms.Position <- 0L
+            clientPipe.Connect()
+            let tryCompileTimeOutSeconds = 5.0
+            use cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(tryCompileTimeOutSeconds))
+            ms.CopyToAsync(clientPipe, cancellationTokenSource.Token) |> Async.AwaitTask |> Async.RunSynchronously
+            clientPipe.Flush()
+
         match subCommand with
         | Start startParams ->
             let rid = startParams.GetResult RID
@@ -107,19 +158,19 @@ let main argv =
                         printfn "version: %s; path: %s Started" version cmdFullPath
                         0
                     with ex ->
-                        printfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
+                        eprintfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
                         1
                 with
                 | :? Argu.ArguParseException ->
                     reraise()
                 | _ ->
-                    printfn "Couldn't find wsfscservice_start"
+                    eprintfn "Couldn't find wsfscservice_start"
                     1
             with
             | :? Argu.ArguParseException ->
                 reraise()
             | _ ->
-                printfn "Couldn't find nuget packages root folder"
+                eprintfn "Couldn't find nuget packages root folder"
                 1
         | Stop stopParams -> 
             let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
@@ -129,24 +180,8 @@ let main argv =
                             x.Kill()
                             printfn "Stopped wsfscservice with PID: (%i)" x.Id
                         else
-                            let location = IO.Path.GetDirectoryName(x.MainModule.FileName)
-                            let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
-                            let serverName = "." // local machine server name
-                            use clientPipe = new NamedPipeClientStream( serverName, //server name, local machine is .
-                                                 pipeName, // name of the pipe,
-                                                 PipeDirection.InOut, // direction of the pipe 
-                                                 PipeOptions.WriteThrough // the operation will not return the control until the write is completed
-                                                 ||| PipeOptions.Asynchronous)
-                            let bf = new BinaryFormatter();
-                            use ms = new MemoryStream()
-                            // args going binary serialized to the service.
-                            let stopNextCompilations: ArgsType = {args = [|"exit"|]}
-                            bf.Serialize(ms, stopNextCompilations);
-                            ms.Flush();
-                            ms.Position <- 0L
-                            clientPipe.Connect()
-                            ms.CopyToAsync(clientPipe) |> Async.AwaitTask |> Async.RunSynchronously
-                            clientPipe.Flush()
+                            let clientPipe = clientPipeForLocation x.MainModule.FileName
+                            sendOneMessage clientPipe {args = [|"exit"|]}
                             printfn "Stop signal sent to wsfscservice with PID: (%i)" x.Id
                     match stopParams.TryGetResult Version with
                     | Some v -> 
@@ -158,14 +193,14 @@ let main argv =
                 with
                 | _ ->
                     try
-                        printfn "Couldn't kill process with PID: (%i)" proc.Id
+                        eprintfn "Couldn't kill process with PID: (%i)" proc.Id
                         (1, successfulErrorPrint)
                     with
                     | _ -> (1, false)
             try
                 let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (0, true)
                 if successfulErrorPrint |> not then
-                    printfn "Couldn't read processes"
+                    eprintfn "Couldn't read processes"
                 returnCode
             with
             | _ -> 1
@@ -184,9 +219,81 @@ let main argv =
                 0
             with
             | _ ->
-                printfn "Couldn't read processes"
+                eprintfn "Couldn't read processes"
+                1
+        | Build ->
+            try
+                let projectFile = 
+                    Directory.EnumerateFiles(".", "*.fsproj")
+                    |> Seq.tryHead
+                    |> Option.bind (Path.GetFullPath >> Some)
+                match projectFile with
+                | Some projectFile ->
+                    let trySendCompile (proc: Process) =
+                        try
+                            let clientPipe = clientPipeForLocation proc.MainModule.FileName
+                            sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
+                            let unexpectedFinishErrorCode = -12211
+                            let write = async {
+                                let printResponse (message: obj) = 
+                                    async {
+                                        // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
+                                        match message :?> string with
+                                        | StdOut n ->
+                                            printfn "%s" n
+                                            return None
+                                        | StdErr e ->
+                                            eprintfn "%s" e
+                                            return None
+                                        | Finish i -> 
+                                            return i |> Some
+                                        | x -> 
+                                            let unrecognizedMessageErrorCode = -13311
+                                            eprintfn "Unrecognizable message from server (%i): %s" unrecognizedMessageErrorCode x
+                                            return unrecognizedMessageErrorCode |> Some
+                                    }
+                                let! errorCode = readingMessages clientPipe printResponse
+                                match errorCode with
+                                | Some x -> return x
+                                | None -> 
+                                    eprintfn "Listening for server finished abruptly (%i)" unexpectedFinishErrorCode
+                                    return unexpectedFinishErrorCode
+                                }
+                            try
+                                match Async.RunSynchronously(write) with
+                                // wsfscservice process reported back, it doesn't have the project cached
+                                | -33212 -> None
+                                // the type of the project is not ws buildable (WIG or Proxy)
+                                | -21233 -> None
+                                | x -> x |> Some
+                            with
+                            | _ -> 
+                                eprintfn "Listening for server finished abruptly (%i)" unexpectedFinishErrorCode
+                                unexpectedFinishErrorCode |> Some
+                        with
+                        | _ ->
+                            None
+                    try
+                        match Process.GetProcessesByName("wsfscservice") |> Array.tryPick trySendCompile with
+                        | Some errorCode -> errorCode
+                        | None ->
+                            let startInfo = ProcessStartInfo("dotnet")
+                            startInfo.Arguments <- "build"
+                            let dotnetProc = Process.Start(startInfo)
+                            dotnetProc.WaitForExit()
+                            dotnetProc.ExitCode
+                    with
+                    | x ->
+                        eprintfn "Couldn't build project: %s" x.Message
+                        1
+                | None ->
+                    eprintfn "Couldn't find a project file in the current directory"
+                    1
+            with
+            | :? UnauthorizedAccessException -> 
+                eprintfn "Couldn't search for a project file (Unauthorized)"
                 1
     with
     | :? Argu.ArguParseException as ex -> 
-        printfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)
+        eprintfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)
         1
