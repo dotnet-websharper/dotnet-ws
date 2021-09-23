@@ -7,6 +7,11 @@
     <WarnOn>3390;$(WarnOn)</WarnOn>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>dotnet-ws</ToolCommandName>
+    <Authors>IntelliFactory</Authors>
+    <PackageProjectUrl>https://github.com/dotnet-websharper/dotnet-ws</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Description>Dotnet tool to manage WebSharper related projects</Description>
   </PropertyGroup>
 
   <ItemGroup>

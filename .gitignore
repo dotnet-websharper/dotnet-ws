@@ -27,3 +27,4 @@
 /.paket/.store/
 /.ionide
 /tests/StressTesting/reports/
+publish/
