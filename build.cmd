@@ -6,4 +6,4 @@ IF "%VERSION_PATCH%"=="" (
 
 echo %VERSION%
 
-dotnet pack -o publish -c Release /p:Version=%VERSION%
+dotnet pack dotnet-ws.fsproj -o publish -c Release /p:Version=%VERSION%

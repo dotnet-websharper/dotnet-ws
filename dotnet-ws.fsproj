@@ -6,6 +6,7 @@
     <RootNamespace>dotnet_ws</RootNamespace>
     <WarnOn>3390;$(WarnOn)</WarnOn>
     <PackAsTool>true</PackAsTool>
+    <PackageType>DotnetTool</PackageType>
     <ToolCommandName>dotnet-ws</ToolCommandName>
     <Authors>IntelliFactory</Authors>
     <PackageProjectUrl>https://github.com/dotnet-websharper/dotnet-ws</PackageProjectUrl>
