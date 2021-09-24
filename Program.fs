@@ -242,18 +242,18 @@ let main argv =
                         let rec findFsproj location =
                             let fsprojsInLocation =
                                 Directory.EnumerateFiles(location, "*.fsproj")
-                                |> Seq.toList
-                            if fsprojsInLocation.Length = 0 then
+                            match Seq.tryHead fsprojsInLocation with
+                            | Some _ ->
+                                Seq.exactlyOne fsprojsInLocation
+                                |> Path.GetFullPath
+                                |> Some
+                            | None -> 
                                 let parent = Directory.GetParent location
                                 // parent of root will be null
                                 if isNull parent then
                                     None
                                 else
                                     findFsproj parent.FullName
-                            else
-                                List.exactlyOne fsprojsInLocation
-                                |> Path.GetFullPath
-                                |> Some
                         findFsproj "."
                                 
                 match projectFile with
