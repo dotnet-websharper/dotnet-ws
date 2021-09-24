@@ -1,0 +1,33 @@
+name: Release dotnet-ws tool
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v1
+        with:
+          dotnet-version: 5.0.301
+
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          persist-credentials: false 
+          submodules: true
+
+      - name: Build and package
+        run: ./build.cmd
+        env:
+          VERSION_PATCH: qwe
+
+      - name: Push package
+        run:
+          dotnet nuget push publish/*.nupkg
+          --api-key ${{ secrets.NUGET_API_KEY }}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
+          --timeout 1800

@@ -6,8 +6,14 @@
     <RootNamespace>dotnet_ws</RootNamespace>
     <WarnOn>3390;$(WarnOn)</WarnOn>
     <PackAsTool>true</PackAsTool>
+    <PackageType>DotnetTool</PackageType>
     <ToolCommandName>dotnet-ws</ToolCommandName>
-	<EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
+    <Authors>IntelliFactory</Authors>
+    <PackageProjectUrl>https://github.com/dotnet-websharper/dotnet-ws</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <Description>Dotnet tool to manage WebSharper related projects</Description>
+	  <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <ItemGroup>
