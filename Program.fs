@@ -237,7 +237,7 @@ let main argv =
                         if File.Exists project |> not then
                             // will become "Couldn't find the project file."
                             failwith "dummy"
-                        Environment.CurrentDirectory <- project
+                        Environment.CurrentDirectory <- Path.GetDirectoryName project
                         project |> Some
                     | None -> 
                         Directory.EnumerateFiles(".", "*.fsproj")
@@ -356,8 +356,8 @@ Failback to "dotnet build".
             | :? System.ArgumentException ->
                 eprintfn "Couldn't search for a single project file in the current directory."
                 1
-            | _ ->
-                eprintfn "Couldn't find the project file."
+            | x ->
+                eprintfn "Error while building: %s." x.Message
                 1
     with
     | :? Argu.ArguParseException as ex -> 
