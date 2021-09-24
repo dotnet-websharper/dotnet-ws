@@ -60,7 +60,7 @@ type Argument =
     | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
     | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
-    | [<CliPrefix(CliPrefix.None); SubCommand>] Build
+    | [<CliPrefix(CliPrefix.None)>] Build of ParseResults<BuildArguments>
 
     interface IArgParserTemplate with
         member s.Usage =
@@ -68,7 +68,7 @@ type Argument =
             | Start _ -> "Starts wsfscservice with the given RID (Runtime Identifier) (win-x64 or linux-x64 or linux-musl-x64). And version. If no value given for version, the latest will be used."
             | Stop _ -> "Sends a stop signal for the wsfscservice with the given version. If no version given it's all running instances. If --force given kills the process instead of stop signal."
             | List -> "Lists running wsfscservice versions."
-            | Build -> "Build WebSharper project in the current folder. Using cached build information where possible."
+            | Build _ -> "Build WebSharper project in the current folder. If --project given, use that folder and project file. Using cached build information where possible."
 and StartArguments =
     | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -88,6 +88,14 @@ and StopArguments =
             match s with
             | Version _ -> "wsfscservice version. If empty all running instances."
             | Force -> "kills the service instead of sending stop signal."
+
+and BuildArguments =
+    | [<AltCommandLine("-p")>] Project of string
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Project _ -> "project file to build."
 
 [<EntryPoint>]
 let main argv =
@@ -214,18 +222,28 @@ let main argv =
                     printfn """The following wsfscservice versions are running:
 
   %s.""" 
-                        (String.Join(Environment.NewLine + "  ", procInfos))
+                        (String.Join(sprintf "%s  " Environment.NewLine, procInfos))
                 0
             with
             | _ ->
                 eprintfn "Couldn't read processes."
                 1
-        | Build ->
+        | Build buildParams ->
+            let projectArgument = buildParams.TryGetResult Project
             try
                 let projectFile = 
-                    Directory.EnumerateFiles(".", "*.fsproj")
-                    |> Seq.tryHead
-                    |> Option.bind (Path.GetFullPath >> Some)
+                    match projectArgument with
+                    | Some project ->
+                        if File.Exists project |> not then
+                            // will become "Couldn't find the project file."
+                            failwith "dummy"
+                        Environment.CurrentDirectory <- project
+                        project |> Some
+                    | None -> 
+                        Directory.EnumerateFiles(".", "*.fsproj")
+                        |> Seq.exactlyOne
+                        |> Path.GetFullPath
+                        |> Some
                 match projectFile with
                 | Some projectFile ->
                     let sendCompile (proc: Process) =
@@ -275,7 +293,13 @@ let main argv =
                             None
                     let dotnetBuild() =
                         let startInfo = ProcessStartInfo("dotnet")
-                        startInfo.Arguments <- "build"
+                        let arguments =
+                            match projectArgument with
+                            | Some project ->
+                                sprintf "build %s" project
+                            | None ->
+                                "build"
+                        startInfo.Arguments <- arguments
                         let dotnetProc = Process.Start(startInfo)
                         dotnetProc.WaitForExit()
                         dotnetProc.ExitCode
@@ -320,7 +344,7 @@ let main argv =
                         eprintfn """Couldn't build project because: %s
 
 Failback to "dotnet build".
-"""                       x.Message
+"""                         x.Message
                         dotnetBuild()
                 | None ->
                     eprintfn "Couldn't find a project file in the current directory."
@@ -329,7 +353,15 @@ Failback to "dotnet build".
             | :? UnauthorizedAccessException | :? Security.SecurityException -> 
                 eprintfn "Couldn't search for a project file (Unauthorized)"
                 1
+            | :? System.ArgumentException ->
+                eprintfn "Couldn't search for a single project file in the current directory."
+                1
+            | _ ->
+                eprintfn "Couldn't find the project file."
+                1
     with
     | :? Argu.ArguParseException as ex -> 
-        eprintfn "%s" (parser.HelpTextMessage.Value + Environment.NewLine + Environment.NewLine + ex.Message)
+        eprintfn """%s
+
+%s."""       parser.HelpTextMessage.Value ex.Message
         1
