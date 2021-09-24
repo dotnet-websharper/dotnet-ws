@@ -237,15 +237,28 @@ let main argv =
                         if File.Exists project |> not then
                             // will become "Couldn't find the project file."
                             failwith "dummy"
-                        Environment.CurrentDirectory <- Path.GetDirectoryName project
                         project |> Some
                     | None -> 
-                        Directory.EnumerateFiles(".", "*.fsproj")
-                        |> Seq.exactlyOne
-                        |> Path.GetFullPath
-                        |> Some
+                        let rec findFsproj location =
+                            let fsprojsInLocation =
+                                Directory.EnumerateFiles(location, "*.fsproj")
+                                |> Seq.toList
+                            if fsprojsInLocation.Length = 0 then
+                                let parent = Directory.GetParent location
+                                // parent of root will be null
+                                if isNull parent then
+                                    None
+                                else
+                                    findFsproj parent.FullName
+                            else
+                                List.exactlyOne fsprojsInLocation
+                                |> Path.GetFullPath
+                                |> Some
+                        findFsproj "."
+                                
                 match projectFile with
                 | Some projectFile ->
+                    Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
                     let sendCompile (proc: Process) =
                         let unexpectedFinishErrorCode = -12211
                         try
