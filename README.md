@@ -12,6 +12,8 @@ SUBCOMMANDS:
     stop <options>        Sends a stop signal for the wsfscservice with the given version. If no version given it's
                           all running instances. If --force given kills the process instead of stop signal.
     list                  Lists running wsfscservice versions.
+    build <options>       Build WebSharper project in the current folder. If --project given, use that folder and
+                          project file. Using cached build information where possible.
 
     Use 'dotnet-ws.exe <subcommand> --help' for additional information.
 

@@ -5,6 +5,7 @@
     <TargetFramework>net5.0</TargetFramework>
     <RootNamespace>dotnet_ws</RootNamespace>
     <WarnOn>3390;$(WarnOn)</WarnOn>
+    <NoWarn>44</NoWarn>
     <PackAsTool>true</PackAsTool>
     <PackageType>DotnetTool</PackageType>
     <ToolCommandName>dotnet-ws</ToolCommandName>
