@@ -332,6 +332,10 @@ let main argv =
                             | Some -21233 -> 
                                 eprintfn "dotnet ws build can't use caching for the actual project type (WIG or Proxy). Failback to \"dotnet build\"."
                                 dotnetBuild()
+                            // cache of the project is outdated
+                            | Some -11234 ->
+                                eprintfn "Project's dependencies changed since last build. Failback to \"dotnet build\"."
+                                dotnetBuild()
                             | Some errorCode -> errorCode
                             | None ->
                                 eprintfn "No running wsfscservice found with the version %s. Failback to \"dotnet build\"." version
