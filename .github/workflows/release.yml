@@ -22,7 +22,7 @@ jobs:
       - name: Build and package
         run: ./build.cmd
         env:
-          VERSION_PATCH: qwe
+          VERSION_PATCH: ${{ github.run_number }
 
       - name: Push package
         run:
