@@ -24,8 +24,9 @@ SUBCOMMANDS:
 
 OPTIONS:
 
-    --help                Display this list of options.
+    -p, --project <PROJ>  Specify the project file to build.
     -v, --version <VER>   Specify the version of the Booster service.
     -r, --rid <RID>       Specify the Runtime Identifier (win-x64|linux-x64|linux-musl-x64) to use.
     -f, --force           Force the specified operation (used for the stop subcommand).
+    --help                Display this list of options.
 ```
