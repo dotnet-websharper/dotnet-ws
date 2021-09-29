@@ -1,7 +1,7 @@
 IF "%VERSION_PATCH%"=="" (
-    SET VERSION=0.1.1-preview1
+    SET VERSION=0.1.1
 ) ELSE (
-    SET VERSION=0.1.%VERSION_PATCH%-preview1
+    SET VERSION=0.1.%VERSION_PATCH%
 )
 
 echo %VERSION%

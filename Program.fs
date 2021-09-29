@@ -28,6 +28,25 @@ open System.Text.RegularExpressions
 open WebSharper.Compiler.WsFscServiceCommon
 open System.Threading
 
+type ErrorCode =
+    | ProjectNotCached          = -33212
+    | ProjectOutdated           = -11234
+    | UnexpectedFinish          = -12211
+    | ProjectTypeNotPermitted   = -21233
+
+type OutputErrorCode =
+    | UnrecognizedMessage       = -13311
+
+let (|Error|_|) code =
+    match code with
+    | Some i when i = int ErrorCode.ProjectNotCached ->
+        Some ErrorCode.ProjectNotCached
+    | Some i when i = int ErrorCode.ProjectOutdated ->
+        Some ErrorCode.ProjectOutdated
+    | Some i when i = int ErrorCode.ProjectTypeNotPermitted ->
+        Some ErrorCode.ProjectTypeNotPermitted
+    | _ ->
+        None
 
 let (|StdOut|_|) (str: string) =
     if str.StartsWith("n: ") then
@@ -57,18 +76,18 @@ type RidEnum =
     | ``linux-musl-x64`` = 3
 
 type Argument =
+    | [<CliPrefix(CliPrefix.None)>] Build of ParseResults<BuildArguments>
     | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
     | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
-    | [<CliPrefix(CliPrefix.None)>] Build of ParseResults<BuildArguments>
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Start _ -> "Starts wsfscservice with the given RID (Runtime Identifier) (win-x64 or linux-x64 or linux-musl-x64). And version. If no value given for version, the latest will be used."
-            | Stop _ -> "Sends a stop signal for the wsfscservice with the given version. If no version given it's all running instances. If --force given kills the process instead of stop signal."
-            | List -> "Lists running wsfscservice versions."
-            | Build _ -> "Build WebSharper project in the current folder. If --project given, use that folder and project file. Using cached build information where possible."
+            | Start _ -> "Start the Booster service (wsfscservice) with the given RID and version. If no value is given for version, the latest (as found in the local NuGet cache) will be used."
+            | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
+            | List -> "List running Booster versions and their source paths."
+            | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
 and StartArguments =
     | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -76,8 +95,8 @@ and StartArguments =
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | RID _ -> "RID must be one of win-x64, linux-x64, linux-musl-x64."
-            | Version _ -> "wsfscservice version. If no value given, the latest will be used."
+            | RID _ -> "Specify the Runtime Identifier (win-x64|linux-x64|linux-musl-x64) to use."
+            | Version _ -> "Specify the version of the Booster service."
 
 and StopArguments =
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -86,8 +105,8 @@ and StopArguments =
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Version _ -> "wsfscservice version. If empty all running instances."
-            | Force -> "kills the service instead of sending stop signal."
+            | Version _ -> "Specify the version of the Booster service."
+            | Force -> "Force the specified operation (used for the stop subcommand)."
 
 and BuildArguments =
     | [<AltCommandLine("-p")>] Project of string
@@ -95,7 +114,7 @@ and BuildArguments =
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Project _ -> "project file to build."
+            | Project _ -> "Specify the project file to build."
 
 [<EntryPoint>]
 let main argv =
@@ -115,7 +134,7 @@ let main argv =
                                  ||| PipeOptions.Asynchronous)
 
         let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
-            let bf = new BinaryFormatter();
+            let bf = BinaryFormatter();
             use ms = new MemoryStream()
             // args going binary serialized to the service.
             bf.Serialize(ms, message);
@@ -260,7 +279,6 @@ let main argv =
                 | Some projectFile ->
                     Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
                     let sendCompile (proc: Process) =
-                        let unexpectedFinishErrorCode = -12211
                         try
                             let clientPipe = clientPipeForLocation proc.MainModule.FileName
                             sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
@@ -277,28 +295,27 @@ let main argv =
                                             return None
                                         | Finish i -> 
                                             return i |> Some
-                                        | x -> 
-                                            let unrecognizedMessageErrorCode = -13311
-                                            eprintfn "Unrecognizable message from server (%i): %s." unrecognizedMessageErrorCode x
-                                            return unrecognizedMessageErrorCode |> Some
+                                        | x ->
+                                            eprintfn "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
+                                            return Some (int OutputErrorCode.UnrecognizedMessage)
                                     }
                                 let! errorCode = readingMessages clientPipe printResponse
                                 match errorCode with
                                 | Some x -> return x
                                 | None -> 
-                                    eprintfn "Listening for server finished abruptly (%i)" unexpectedFinishErrorCode
-                                    return unexpectedFinishErrorCode
+                                    eprintfn "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                                    return (int ErrorCode.UnexpectedFinish)
                                 }
                             try
                                 Async.RunSynchronously(write)
                             with
                             | _ -> 
-                                eprintfn "Listening for server finished abruptly (%i)" unexpectedFinishErrorCode
-                                unexpectedFinishErrorCode
+                                eprintfn "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                                (int ErrorCode.UnexpectedFinish)
                         with
                         | x -> 
                             eprintfn "Couldn't send compile message to the build server: %s." x.Message
-                            unexpectedFinishErrorCode
+                            (int ErrorCode.UnexpectedFinish)
                     let tryCheckVersion (proc: Process) (version: string) =
                         if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
                             sendCompile proc |> Some
@@ -325,27 +342,27 @@ let main argv =
                             let version = m.Groups.[1].Value
                             match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                             // wsfscservice process reported back, it doesn't have the project cached
-                            | Some -33212 -> 
-                                eprintfn "Build service didn't cache the result of the build. Failback to \"dotnet build\"."
+                            | Error ErrorCode.ProjectNotCached -> 
+                                eprintfn "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
                                 dotnetBuild()
                             // the type of the project is not ws buildable (WIG or Proxy)
-                            | Some -21233 -> 
-                                eprintfn "dotnet ws build can't use caching for the actual project type (WIG or Proxy). Failback to \"dotnet build\"."
+                            | Error ErrorCode.ProjectTypeNotPermitted -> 
+                                eprintfn "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
                                 dotnetBuild()
                             // cache of the project is outdated
-                            | Some -11234 ->
-                                eprintfn "Project's dependencies changed since last build. Failback to \"dotnet build\"."
+                            | Error ErrorCode.ProjectOutdated ->
+                                eprintfn "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
                                 dotnetBuild()
                             | Some errorCode -> errorCode
                             | None ->
-                                eprintfn "No running wsfscservice found with the version %s. Failback to \"dotnet build\"." version
+                                eprintfn "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
                                 dotnetBuild()
                         else
-                            eprintfn "No WebSharper.FSharp package found in the downloaded nuget packages. Failback to \"dotnet build\"."
+                            eprintfn "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
                             dotnetBuild()
                     with
                     | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-                        eprintfn "Couldn't read obj/project.nuget.cache (Unauthorized). Failback to \"dotnet build\"."
+                        eprintfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                         dotnetBuild()
                     | :? FileNotFoundException | :? DirectoryNotFoundException ->
                         eprintfn """Cache file for downloaded nuget packages is not found. Try the following:
@@ -355,12 +372,12 @@ let main argv =
 """
                         dotnetBuild()
                     | :? IOException ->
-                        eprintfn "Couldn't read obj/project.nuget.cache. Failback to \"dotnet build\"."
+                        eprintfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
                         dotnetBuild()
                     | x ->
                         eprintfn """Couldn't build project because: %s
 
-Failback to "dotnet build".
+Fallback to "dotnet build".
 """                         x.Message
                         dotnetBuild()
                 | None ->
