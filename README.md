@@ -1,23 +1,31 @@
-# dotnet-ws 
- 
-```
-dotnet-ws is a dotnet tool for WebSharper
+# dotnet ws 
 
-USAGE: dotnet-ws.exe [--help] [<subcommand> [<options>]]
+`dotnet ws` is a .NET tool for WebSharper. You can install it with (remove the `-g` option to install locally):
+
+```
+dotnet tool install -g dotnet-ws
+```
+
+# Usage
+
+```
+USAGE: dotnet ws [--help] [<subcommand> [<options>]]
 
 SUBCOMMANDS:
 
-    start <options>       Starts wsfscservice with the given RID (Runtime Identifier) (win-x64 or linux-x64 or
-                          linux-musl-x64). And version. If no value given for version, the latest will be used.
-    stop <options>        Sends a stop signal for the wsfscservice with the given version. If no version given it's
-                          all running instances. If --force given kills the process instead of stop signal.
-    list                  Lists running wsfscservice versions.
-    build <options>       Build WebSharper project in the current folder. If --project given, use that folder and
-                          project file. Using cached build information where possible.
-
-    Use 'dotnet-ws.exe <subcommand> --help' for additional information.
+    build [--project xxx] Build the WebSharper project in the current folder (or in the nearest parent folder).
+                          You can optionally specify a project file using `--project`.
+    start <options>       Start the Booster service (wsfscservice) with the given RID and version. If no value
+                          is given for version, the latest (as found in the local NuGet cache) will be used.
+    stop <options>        Send a stop signal to the Booster service with the given version. If no version is
+                          given all running instances are signaled. Use `--force` to kill process(es) instead
+                          of sending a stop signal.
+    list                  List running Booster versions and their source paths.
 
 OPTIONS:
 
-    --help                display this list of options.
+    --help                Display this list of options.
+    -v, --version <VER>   Specify the version of the Booster service.
+    -r, --rid <RID>       Specify the Runtime Identifier (win-x64|linux-x64|linux-musl-x64) to use.
+    -f, --force           Force the specified operation (used for the stop subcommand).
 ```
