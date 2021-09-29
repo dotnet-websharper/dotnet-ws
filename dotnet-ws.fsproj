@@ -11,10 +11,11 @@
     <ToolCommandName>dotnet-ws</ToolCommandName>
     <Authors>IntelliFactory</Authors>
     <PackageProjectUrl>https://github.com/dotnet-websharper/dotnet-ws</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/dotnet-websharper/dotnet-ws</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <Description>Dotnet tool to manage WebSharper related projects</Description>
-	  <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
+    <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
   <ItemGroup>
