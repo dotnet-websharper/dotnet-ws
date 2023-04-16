@@ -116,6 +116,13 @@ and BuildArguments =
             match s with
             | Project _ -> "Specify the project file to build."
 
+let dotnetBinaryFolder =
+    [
+        "net7.0"
+        "net6.0"
+        "net5.0"
+    ]
+
 [<EntryPoint>]
 let main argv =
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet-ws.exe", helpTextMessage = "dotnet-ws is a dotnet tool for WebSharper.", checkStructure = true)
@@ -172,20 +179,32 @@ let main argv =
                     // start a detached wsfscservice.exe. Platform specific.
                     let cmdName = if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
                                       "wsfscservice_start.cmd" else "wsfscservice_start.sh"
-                    let cmdFullPath = Path.Combine(fsharpFolder, version, "tools", "net5.0", ridString, cmdName)
-                    if File.Exists(cmdFullPath) |> not then
+                    let cmdFullPath =
+                        dotnetBinaryFolder
+                        |> List.tryPick (fun folder ->
+                            Path.Combine(fsharpFolder, version, "tools", folder, ridString, cmdName)
+                            |> fun path ->
+                                if File.Exists path then
+                                    Some path
+                                else
+                                    None
+                        )
+
+                    match cmdFullPath with
+                    | None ->
                         failwith "dummy" // It will become "Couldn't find wsfscservice_start"
-                    let startInfo = ProcessStartInfo(cmdFullPath)
-                    startInfo.CreateNoWindow <- true
-                    startInfo.UseShellExecute <- false
-                    startInfo.WindowStyle <- ProcessWindowStyle.Hidden
-                    try
-                        Process.Start(startInfo) |> ignore
-                        printfn "version: %s; path: %s Started." version cmdFullPath
-                        0
-                    with ex ->
-                        eprintfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
-                        1
+                    | Some cmdFullPath ->
+                        let startInfo = ProcessStartInfo(cmdFullPath)
+                        startInfo.CreateNoWindow <- true
+                        startInfo.UseShellExecute <- false
+                        startInfo.WindowStyle <- ProcessWindowStyle.Hidden
+                        try
+                            Process.Start(startInfo) |> ignore
+                            printfn "version: %s; path: %s Started." version cmdFullPath
+                            0
+                        with ex ->
+                            eprintfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
+                            1
                 with
                 | :? Argu.ArguParseException ->
                     reraise()
