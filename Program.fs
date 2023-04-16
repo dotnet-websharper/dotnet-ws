@@ -213,6 +213,8 @@ let main argv =
                     | Some v -> 
                         if proc.MainModule.FileVersionInfo.FileVersion = v then
                             killOrSend proc
+                        else
+                            printfn "Could not find running service with version: %s" v
                     | None ->
                         killOrSend proc
                     (returnCode, successfulErrorPrint)
