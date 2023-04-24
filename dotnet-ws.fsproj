@@ -22,6 +22,7 @@
     <None Include=".gitignore" />
     <None Include="LICENSE.md" />
     <None Include="README.md" />
+    <Compile Include="FileCompile.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
