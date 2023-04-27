@@ -18,57 +18,15 @@
 //
 // $end{copyright}
 open System
+open System.IO
 open System.Diagnostics
+open System.Text.RegularExpressions
 open Argu
 open Fake.Core
-open System.IO.Pipes
-open System.IO
-open System.Runtime.Serialization.Formatters.Binary
-open System.Text.RegularExpressions
 open WebSharper.Compiler.WsFscServiceCommon
-open System.Threading
 
-type ErrorCode =
-    | ProjectNotCached          = -33212
-    | ProjectOutdated           = -11234
-    | UnexpectedFinish          = -12211
-    | ProjectTypeNotPermitted   = -21233
-
-type OutputErrorCode =
-    | UnrecognizedMessage       = -13311
-
-let (|Error|_|) code =
-    match code with
-    | Some i when i = int ErrorCode.ProjectNotCached ->
-        Some ErrorCode.ProjectNotCached
-    | Some i when i = int ErrorCode.ProjectOutdated ->
-        Some ErrorCode.ProjectOutdated
-    | Some i when i = int ErrorCode.ProjectTypeNotPermitted ->
-        Some ErrorCode.ProjectTypeNotPermitted
-    | _ ->
-        None
-
-let (|StdOut|_|) (str: string) =
-    if str.StartsWith("n: ") then
-        str.Substring(3) |> Some
-    else
-        None
-
-let (|StdErr|_|) (str: string) =
-    if str.StartsWith("e: ") then
-        str.Substring(3) |> Some
-    else
-        None
-
-let (|Finish|_|) (str: string) =
-    if str.StartsWith("x: ") then
-        let trimmed = 
-            str.Substring(3)
-        trimmed
-        |> System.Int32.Parse
-        |> Some
-    else
-        None
+open FileCompile
+open FileCompile.BuildHelpers
 
 type RidEnum =
     | ``win-x64`` = 1
@@ -80,6 +38,7 @@ type Argument =
     | [<CliPrefix(CliPrefix.None)>] Start of ParseResults<StartArguments>
     | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
+    | [<CliPrefix(CliPrefix.None)>] Compile of ParseResults<CompileArguments>
 
     interface IArgParserTemplate with
         member s.Usage =
@@ -88,6 +47,8 @@ type Argument =
             | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
             | List -> "List running Booster versions and their source paths."
             | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
+            | Compile _ -> "Compile a given fs(x) file to JavaScript or TypeScript utilizing WebSharper's Booster if enabled"
+
 and StartArguments =
     | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -101,12 +62,14 @@ and StartArguments =
 and StopArguments =
     | [<AltCommandLine("-v")>] Version of semver:string
     | [<AltCommandLine("-f")>] Force
+    | ``Clear-Cache``
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
             | Version _ -> "Specify the version of the Booster service."
             | Force -> "Force the specified operation (used for the stop subcommand)."
+            | ``Clear-Cache`` -> "Clear local temp folder data."
 
 and BuildArguments =
     | [<AltCommandLine("-p")>] Project of string
@@ -116,35 +79,19 @@ and BuildArguments =
             match s with
             | Project _ -> "Specify the project file to build."
 
+let dotnetBinaryFolder =
+    [
+        "net7.0"
+        "net6.0"
+        "net5.0"
+    ]
+
 [<EntryPoint>]
 let main argv =
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet-ws.exe", helpTextMessage = "dotnet-ws is a dotnet tool for WebSharper.", checkStructure = true)
     try
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
-
-        let clientPipeForLocation (location:string) =
-            let location = IO.Path.GetDirectoryName(location)
-            let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
-            let serverName = "." // local machine server name
-            new NamedPipeClientStream( serverName, //server name, local machine is .
-                                 pipeName, // name of the pipe,
-                                 PipeDirection.InOut, // direction of the pipe 
-                                 PipeOptions.WriteThrough // the operation will not return the control until the write is completed
-                                 ||| PipeOptions.Asynchronous)
-
-        let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
-            let bf = BinaryFormatter();
-            use ms = new MemoryStream()
-            // args going binary serialized to the service.
-            bf.Serialize(ms, message);
-            ms.Flush();
-            ms.Position <- 0L
-            clientPipe.Connect()
-            let tryCompileTimeOutSeconds = 5.0
-            use cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(tryCompileTimeOutSeconds))
-            ms.CopyToAsync(clientPipe, cancellationTokenSource.Token) |> Async.AwaitTask |> Async.RunSynchronously
-            clientPipe.Flush()
 
         match subCommand with
         | Start startParams ->
@@ -172,20 +119,32 @@ let main argv =
                     // start a detached wsfscservice.exe. Platform specific.
                     let cmdName = if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
                                       "wsfscservice_start.cmd" else "wsfscservice_start.sh"
-                    let cmdFullPath = Path.Combine(fsharpFolder, version, "tools", "net5.0", ridString, cmdName)
-                    if File.Exists(cmdFullPath) |> not then
+                    let cmdFullPath =
+                        dotnetBinaryFolder
+                        |> List.tryPick (fun folder ->
+                            Path.Combine(fsharpFolder, version, "tools", folder, ridString, cmdName)
+                            |> fun path ->
+                                if File.Exists path then
+                                    Some path
+                                else
+                                    None
+                        )
+
+                    match cmdFullPath with
+                    | None ->
                         failwith "dummy" // It will become "Couldn't find wsfscservice_start"
-                    let startInfo = ProcessStartInfo(cmdFullPath)
-                    startInfo.CreateNoWindow <- true
-                    startInfo.UseShellExecute <- false
-                    startInfo.WindowStyle <- ProcessWindowStyle.Hidden
-                    try
-                        Process.Start(startInfo) |> ignore
-                        printfn "version: %s; path: %s Started." version cmdFullPath
-                        0
-                    with ex ->
-                        eprintfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
-                        1
+                    | Some cmdFullPath ->
+                        let startInfo = ProcessStartInfo(cmdFullPath)
+                        startInfo.CreateNoWindow <- true
+                        startInfo.UseShellExecute <- false
+                        startInfo.WindowStyle <- ProcessWindowStyle.Hidden
+                        try
+                            Process.Start(startInfo) |> ignore
+                            printfn "version: %s; path: %s Started." version cmdFullPath
+                            0
+                        with ex ->
+                            eprintfn "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
+                            1
                 with
                 | :? Argu.ArguParseException ->
                     reraise()
@@ -209,10 +168,12 @@ let main argv =
                             let clientPipe = clientPipeForLocation x.MainModule.FileName
                             sendOneMessage clientPipe {args = [|"exit"|]}
                             printfn "Stop signal sent to wsfscservice with PID: (%i)" x.Id
-                    match stopParams.TryGetResult Version with
+                    match stopParams.TryGetResult StopArguments.Version with
                     | Some v -> 
                         if proc.MainModule.FileVersionInfo.FileVersion = v then
                             killOrSend proc
+                        else
+                            printfn "Could not find running service with version: %s" v
                     | None ->
                         killOrSend proc
                     (returnCode, successfulErrorPrint)
@@ -227,6 +188,8 @@ let main argv =
                 let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (0, true)
                 if successfulErrorPrint |> not then
                     eprintfn "Couldn't read processes."
+                if returnCode = 0 && stopParams.TryGetResult StopArguments.Version |> Option.isNone && stopParams.TryGetResult StopArguments.``Clear-Cache`` |> Option.isSome then
+                    FileCompile.clearCacheFolder ()
                 returnCode
             with
             | _ -> 1
@@ -393,6 +356,7 @@ Fallback to "dotnet build".
             | x ->
                 eprintfn "Error while building: %s." x.Message
                 1
+        | Compile arguments -> FileCompile.Compile arguments
     with
     | :? Argu.ArguParseException as ex -> 
         eprintfn """%s
