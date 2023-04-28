@@ -236,7 +236,7 @@ module Files =
         <TargetFramework>netstandard2.0</TargetFramework>
     </PropertyGroup>
     <ItemGroup>
-        <Compile Include="%FILE" />
+        <Compile Include="File%EXT" />
         <None Include="wsconfig.json" />
     </ItemGroup>
 </Project>
@@ -273,7 +273,7 @@ let parseDependencies path =
 
 let salt = "ws-compile"
 
-let getEncodedFolderName (dependencies: (string * string option) array) =
+let getEncodedFolderName (dependencies: (string * string option) array) extension =
     dependencies
     |> Array.map (fun (package, version) ->
         match version with
@@ -281,6 +281,7 @@ let getEncodedFolderName (dependencies: (string * string option) array) =
         | Some v -> sprintf "%s:%s" package v
     )
     |> String.concat "|"
+    |> fun s -> s + "|" + extension
     |> fun deps ->
         let sha256 = System.Security.Cryptography.SHA256.Create()
         sha256.ComputeHash(Encoding.Unicode.GetBytes(deps + salt))
@@ -313,15 +314,15 @@ let projectFileSetup isDebug (path: string) (dependencies: (string * string opti
         match outputFilePath with
         | None -> (Path.GetFileNameWithoutExtension filePath) + extension
         | Some outputFilePath -> (Path.GetFileNameWithoutExtension outputFilePath) + extension
-    let fsFile = Path.Combine(path, fileName)
-    let fsFileName = fsFile |> Path.GetFileName
+    let fsFileName = sprintf "File%s" extension //fsFile |> Path.GetFileName
+    let fsFile = Path.Combine(path, fsFileName)
     
     if not <| System.IO.Directory.Exists path then
         System.IO.Directory.CreateDirectory(path) |> ignore
 
     let projectFile = Path.Combine(path, "MyProject.fsproj")
     if not <| System.IO.File.Exists projectFile then
-        System.IO.File.WriteAllText(projectFile, Files.projectFile.Replace("%FILE", fsFileName))
+        System.IO.File.WriteAllText(projectFile, Files.projectFile.Replace("%EXT", extension))
         dependencies
         |> Array.iter (fun (package, version) ->
             dotnetAddPackage isDebug package projectFile version |> ignore
@@ -387,30 +388,46 @@ let Compile (arguments: ParseResults<CompileArguments>) =
     let path = arguments.TryGetResult CompileArguments.FilePath
     match path with
     | Some path ->
-        if not <| File.Exists path then exitWithError <| CompileError.FileNotFound path else
-        let dependencies = parseDependencies path
+        let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
+        let extension = Path.GetExtension rootedPath
+        if not <| File.Exists rootedPath then exitWithError <| CompileError.FileNotFound rootedPath else
+        let dependencies = parseDependencies rootedPath
         let websharperVersion = arguments.TryGetResult CompileArguments.Version
         let isDebug = arguments.TryGetResult CompileArguments.Debug |> Option.isSome
         let adjustedDependencies = dependencies |> Array.append [|"WebSharper.FSharp", websharperVersion; "WebSharper.MathJS", websharperVersion|] |> Array.distinctBy fst
         let isStandalone = arguments.TryGetResult CompileArguments.Standalone
         let folderToCreateIfNeeded =
             match isStandalone with
-            | Some _ -> Path.GetDirectoryName(path)
+            | Some _ -> Path.GetDirectoryName(rootedPath)
             | None _ ->
-                let encodedFolderName = getEncodedFolderName adjustedDependencies
+                let encodedFolderName = getEncodedFolderName adjustedDependencies extension
                 Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "ws-compile", encodedFolderName)
         let isTS = arguments.TryGetResult CompileArguments.TypeScript |> Option.isSome
         let outputFileName = arguments.TryGetResult CompileArguments.Output
         let outputPath =
             match arguments.TryGetResult CompileArguments.Path with
-            | None -> Path.GetDirectoryName(path)
-            | Some path -> Path.GetDirectoryName(path)
-            |> Path.GetFullPath
-        let projectToBuild = projectFileSetup isDebug folderToCreateIfNeeded adjustedDependencies outputPath path isTS outputFileName
+            | None -> Path.GetDirectoryName(rootedPath)
+            | Some path ->
+                let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
+                Path.GetDirectoryName(rootedPath)
+                |> Path.GetFullPath
+        let projectToBuild = projectFileSetup isDebug folderToCreateIfNeeded adjustedDependencies outputPath rootedPath isTS outputFileName
         let r = BuildHelpers.buildProjectFile projectToBuild isDebug
         match arguments.TryGetResult CompileArguments.Path with
+        | None when r = 0 ->
+            let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
+            let outputFolder = Path.GetDirectoryName rootedPath
+            try
+                let source = Path.Combine(outputPath, "MyProject")
+                let dest = Path.Combine(outputPath, outputFolder)
+                copyDirectoryContents source dest
+                0
+            with ex ->
+                eprintfn "Could not find JS output"
+                1
         | Some path when r = 0 ->
-            let outputFolder = Path.GetFileName path
+            let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
+            let outputFolder = Path.GetFileName rootedPath
             try
                 let source = Path.Combine(outputPath, "MyProject")
                 let dest = Path.Combine(outputPath, outputFolder)
