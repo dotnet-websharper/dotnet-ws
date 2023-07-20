@@ -13,6 +13,20 @@ open WebSharper.Compiler.WsFscServiceCommon
 
 module BuildHelpers =
 
+    module PrintHelpers =
+        let consoleColor (fc : ConsoleColor) = 
+            let current = Console.ForegroundColor
+            Console.ForegroundColor <- fc
+            { new IDisposable with
+                  member x.Dispose() = Console.ForegroundColor <- current }
+        
+        let cprintf color str  = Printf.kprintf (fun s -> use c = consoleColor color in printf "%s" s) str
+        let cprintfn color str = Printf.kprintf (fun s -> use c = consoleColor color in printfn "%s" s) str
+    
+        let error str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.Red in eprintfn "%s" s) str
+        let warning str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.Yellow in printfn "%s" s) str
+        let info str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.DarkBlue in printfn "%s" s) str
+
     type ErrorCode =
         | ProjectNotCached          = -33212
         | ProjectOutdated           = -11234
@@ -59,12 +73,8 @@ module BuildHelpers =
         let startInfo = ProcessStartInfo("dotnet")
         let arguments = sprintf "build %s -c %s" project (if isDebug then "Debug" else "Release")
         startInfo.Arguments <- arguments
-        startInfo.RedirectStandardOutput <- not isDebug
-        startInfo.RedirectStandardInput <- not isDebug
         let dotnetProc = Process.Start(startInfo)
         dotnetProc.WaitForExit()
-        if not isDebug then
-            dotnetProc.OutputDataReceived.Add(ignore)
         dotnetProc.ExitCode
 
     let clientPipeForLocation (location:string) =
@@ -106,30 +116,30 @@ module BuildHelpers =
                                     printfn "%s" n
                                     return None
                                 | StdErr e ->
-                                    eprintfn "%s" e
+                                    PrintHelpers.error "%s" e
                                     return None
                                 | Finish i -> 
                                     return i |> Some
                                 | x ->
-                                    eprintfn "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
+                                    PrintHelpers.error "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
                                     return Some (int OutputErrorCode.UnrecognizedMessage)
                             }
                         let! errorCode = readingMessages clientPipe printResponse
                         match errorCode with
                         | Some x -> return x
                         | None -> 
-                            eprintfn "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                            PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
                             return (int ErrorCode.UnexpectedFinish)
                         }
                     try
                         Async.RunSynchronously(write)
                     with
                     | _ -> 
-                        eprintfn "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                        PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
                         (int ErrorCode.UnexpectedFinish)
                 with
                 | x -> 
-                    eprintfn "Couldn't send compile message to the build server: %s." x.Message
+                    PrintHelpers.error "Couldn't send compile message to the build server: %s." x.Message
                     (int ErrorCode.UnexpectedFinish)
             let tryCheckVersion (proc: Process) (version: string) =
                 if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
@@ -148,52 +158,52 @@ module BuildHelpers =
                     match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                     // wsfscservice process reported back, it doesn't have the project cached
                     | Error ErrorCode.ProjectNotCached -> 
-                        eprintfn "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
+                        printfn "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
                         dotnetBuild () 
                     // the type of the project is not ws buildable (WIG or Proxy)
                     | Error ErrorCode.ProjectTypeNotPermitted -> 
-                        eprintfn "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
+                        printfn "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
                         dotnetBuild()
                     // cache of the project is outdated
                     | Error ErrorCode.ProjectOutdated ->
-                        eprintfn "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
+                        printfn "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
                         dotnetBuild()
                     | Some errorCode -> errorCode
                     | None ->
-                        eprintfn "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
+                        printfn "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
                         dotnetBuild()
                 else
-                    eprintfn "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                    printfn "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
                     dotnetBuild()
             with
             | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-                eprintfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
+                printfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                 dotnetBuild()
             | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                eprintfn """Cache file for downloaded nuget packages is not found. Try the following:
+                printfn """Cache file for downloaded nuget packages is not found. Try the following:
                     
     - Add WebSharper.FSharp nuget to the current project (for example "> dotnet add package WebSharper.FSharp")
     - Build prior running "dotnet ws build". Build will run in a moment.
     """
                 dotnetBuild()
             | :? IOException ->
-                eprintfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
+                printfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
                 dotnetBuild()
             | x ->
-                eprintfn """Couldn't build project because: %s
+                printfn """Couldn't build project because: %s
     
     Fallback to "dotnet build".
     """                         x.Message
                 dotnetBuild()
         with
         | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-            eprintfn "Couldn't search for a project file (Unauthorized)"
+            PrintHelpers.error "Couldn't search for a project file (Unauthorized)"
             1
         | :? System.ArgumentException ->
-            eprintfn "Couldn't search for a single project file in the current directory."
+            PrintHelpers.error "Couldn't search for a single project file in the current directory."
             1
         | x ->
-            eprintfn "Error while building: %s." x.Message
+            PrintHelpers.error "Error while building: %s." x.Message
             1
 
 type CompileArguments =
@@ -297,12 +307,8 @@ let dotnetAddPackage isDebug package project version =
         | Some v ->
             sprintf "add %s package %s -v %s --prerelease" project package v
     startInfo.Arguments <- arguments
-    startInfo.RedirectStandardOutput <- not isDebug
-    startInfo.RedirectStandardInput <- not isDebug
     let dotnetProc = Process.Start(startInfo)
     dotnetProc.WaitForExit()
-    if isDebug then
-        dotnetProc.OutputDataReceived.Add(ignore)
     dotnetProc.ExitCode
 
 let escapeString (str: string) =
@@ -423,7 +429,7 @@ let Compile (arguments: ParseResults<CompileArguments>) =
                 copyDirectoryContents source dest
                 0
             with ex ->
-                eprintfn "Could not find JS output"
+                BuildHelpers.PrintHelpers.error "Could not find JS output"
                 1
         | Some path when r = 0 ->
             let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
@@ -434,7 +440,7 @@ let Compile (arguments: ParseResults<CompileArguments>) =
                 copyDirectoryContents source dest
                 0
             with ex ->
-                eprintfn "Could not find JS output"
+                BuildHelpers.PrintHelpers.error "Could not find JS output"
                 1
         | _ -> r
         
