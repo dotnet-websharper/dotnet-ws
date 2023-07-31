@@ -305,7 +305,7 @@ let dotnetAddPackage isDebug package project version =
         | None ->
             sprintf "add %s package %s --prerelease" project package 
         | Some v ->
-            sprintf "add %s package %s -v %s --prerelease" project package v
+            sprintf "add %s package %s -v %s" project package v
     startInfo.Arguments <- arguments
     let dotnetProc = Process.Start(startInfo)
     dotnetProc.WaitForExit()
@@ -412,7 +412,9 @@ let Compile (arguments: ParseResults<CompileArguments>) =
         let outputFileName = arguments.TryGetResult CompileArguments.Output
         let outputPath =
             match arguments.TryGetResult CompileArguments.Path with
-            | None -> Path.GetDirectoryName(rootedPath)
+            | None ->
+                Path.GetDirectoryName(rootedPath)
+                |> Path.GetFullPath
             | Some path ->
                 let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
                 Path.GetDirectoryName(rootedPath)
