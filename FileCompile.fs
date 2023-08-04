@@ -219,6 +219,7 @@ type CompileArguments =
     | [<AltCommandLine("-p")>] Path of string
     | [<AltCommandLine("-ts")>] TypeScript
     | [<AltCommandLine("-d")>] Debug
+    | Force
 
     interface IArgParserTemplate with
         member s.Usage =
@@ -230,6 +231,7 @@ type CompileArguments =
             | Debug -> "Use debug mode for compilation."
             | TypeScript -> "Enable TypeScript output."
             | FilePath _ -> "Specify the path to the file to compile."
+            | Force -> "Forces the temporary folder to be flushed before the compilation"
 
 type CompileError =
     | FileNotFound of string
@@ -319,7 +321,7 @@ let dotnetAddPackage isDebug package project version =
 let escapeString (str: string) =
     str.Replace(@"\", @"\\")
 
-let projectFileSetup isDebug (path: string) (dependencies: (string * string option) array) (outputPath: string) (filePath: string) (isTS: bool) (outputFilePath: string option) =
+let projectFileSetup isDebug (path: string) (dependencies: (string * string option) array) (outputPath: string) (filePath: string) (isTS: bool) (outputFilePath: string option) clearIfFolderExists =
     let extension = Path.GetExtension filePath
     let fileName =
         match outputFilePath with
@@ -328,6 +330,12 @@ let projectFileSetup isDebug (path: string) (dependencies: (string * string opti
     let fsFileName = sprintf "File%s" extension //fsFile |> Path.GetFileName
     let fsFile = Path.Combine(path, fsFileName)
     
+    if System.IO.Directory.Exists path && clearIfFolderExists then
+        System.IO.Directory.EnumerateFiles(path)
+        |> Seq.iter (System.IO.File.Delete)
+        System.IO.Directory.EnumerateDirectories(path)
+        |> Seq.iter (fun d -> System.IO.Directory.Delete(d, true))
+
     if not <| System.IO.Directory.Exists path then
         System.IO.Directory.CreateDirectory(path) |> ignore
 
@@ -407,6 +415,7 @@ let Compile (arguments: ParseResults<CompileArguments>) =
         let isDebug = arguments.TryGetResult CompileArguments.Debug |> Option.isSome
         let adjustedDependencies = dependencies |> Array.append [|"WebSharper.FSharp", websharperVersion; "WebSharper.MathJS", websharperVersion|] |> Array.distinctBy fst
         let isStandalone = arguments.TryGetResult CompileArguments.Standalone
+        let clearIfFolderExists = arguments.TryGetResult CompileArguments.Force |> Option.isSome
         let folderToCreateIfNeeded =
             match isStandalone with
             | Some _ -> Path.GetDirectoryName(rootedPath)
@@ -424,7 +433,7 @@ let Compile (arguments: ParseResults<CompileArguments>) =
                 let rootedPath = Path.Combine(System.Environment.CurrentDirectory, path)
                 Path.GetDirectoryName(rootedPath)
                 |> Path.GetFullPath
-        let projectToBuild = projectFileSetup isDebug folderToCreateIfNeeded adjustedDependencies outputPath rootedPath isTS outputFileName
+        let projectToBuild = projectFileSetup isDebug folderToCreateIfNeeded adjustedDependencies outputPath rootedPath isTS outputFileName clearIfFolderExists
         let r = BuildHelpers.buildProjectFile projectToBuild isDebug
         match arguments.TryGetResult CompileArguments.Path with
         | None when r = 0 ->
