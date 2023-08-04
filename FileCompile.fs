@@ -101,110 +101,115 @@ module BuildHelpers =
         clientPipe.Flush()
     
     let buildProjectFile (projectFile: string) (isDebug: bool) =
-        try                
-            Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
-            let sendCompile (proc: Process) =
-                try
-                    let clientPipe = clientPipeForLocation proc.MainModule.FileName
-                    sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
-                    let write = async {
-                        let printResponse (message: obj) = 
-                            async {
-                                // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
-                                match message :?> string with
-                                | StdOut n ->
-                                    printfn "%s" n
-                                    return None
-                                | StdErr e ->
-                                    PrintHelpers.error "%s" e
-                                    return None
-                                | Finish i -> 
-                                    return i |> Some
-                                | x ->
-                                    PrintHelpers.error "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
-                                    return Some (int OutputErrorCode.UnrecognizedMessage)
-                            }
-                        let! errorCode = readingMessages clientPipe printResponse
-                        match errorCode with
-                        | Some x -> return x
-                        | None -> 
-                            PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
-                            return (int ErrorCode.UnexpectedFinish)
-                        }
+        let currentPath = Environment.CurrentDirectory
+        try
+            try                
+                Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
+                let sendCompile (proc: Process) =
                     try
-                        Async.RunSynchronously(write)
+                        let clientPipe = clientPipeForLocation proc.MainModule.FileName
+                        sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
+                        let write = async {
+                            let printResponse (message: obj) = 
+                                async {
+                                    // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
+                                    match message :?> string with
+                                    | StdOut n ->
+                                        printfn "%s" n
+                                        return None
+                                    | StdErr e ->
+                                        PrintHelpers.error "%s" e
+                                        return None
+                                    | Finish i -> 
+                                        return i |> Some
+                                    | x ->
+                                        PrintHelpers.error "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
+                                        return Some (int OutputErrorCode.UnrecognizedMessage)
+                                }
+                            let! errorCode = readingMessages clientPipe printResponse
+                            match errorCode with
+                            | Some x -> return x
+                            | None -> 
+                                PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                                return (int ErrorCode.UnexpectedFinish)
+                            }
+                        try
+                            Async.RunSynchronously(write)
+                        with
+                        | _ -> 
+                            PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                            (int ErrorCode.UnexpectedFinish)
                     with
-                    | _ -> 
-                        PrintHelpers.error "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                    | x -> 
+                        PrintHelpers.error "Couldn't send compile message to the build server: %s." x.Message
                         (int ErrorCode.UnexpectedFinish)
+                let tryCheckVersion (proc: Process) (version: string) =
+                    if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
+                        sendCompile proc |> Some
+                    else
+                        None
+                let dotnetBuild () =
+                    dotnetBuild projectFile isDebug
+                try
+                    let nugetCachePath = Path.Combine("obj", "project.nuget.cache")
+                    let nugetCache = File.ReadAllText(nugetCachePath)
+                    let regex = new Regex("websharper\.fsharp\.(.+)\.nupkg\.sha512")
+                    let m = regex.Match(nugetCache)
+                    if m.Success then
+                        let version = m.Groups.[1].Value
+                        match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
+                        // wsfscservice process reported back, it doesn't have the project cached
+                        | Error ErrorCode.ProjectNotCached -> 
+                            printfn "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
+                            dotnetBuild () 
+                        // the type of the project is not ws buildable (WIG or Proxy)
+                        | Error ErrorCode.ProjectTypeNotPermitted -> 
+                            printfn "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
+                            dotnetBuild()
+                        // cache of the project is outdated
+                        | Error ErrorCode.ProjectOutdated ->
+                            printfn "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
+                            dotnetBuild()
+                        | Some errorCode -> errorCode
+                        | None ->
+                            printfn "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
+                            dotnetBuild()
+                    else
+                        printfn "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                        dotnetBuild()
                 with
-                | x -> 
-                    PrintHelpers.error "Couldn't send compile message to the build server: %s." x.Message
-                    (int ErrorCode.UnexpectedFinish)
-            let tryCheckVersion (proc: Process) (version: string) =
-                if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
-                    sendCompile proc |> Some
-                else
-                    None
-            let dotnetBuild () =
-                dotnetBuild projectFile isDebug
-            try
-                let nugetCachePath = Path.Combine("obj", "project.nuget.cache")
-                let nugetCache = File.ReadAllText(nugetCachePath)
-                let regex = new Regex("websharper\.fsharp\.(.+)\.nupkg\.sha512")
-                let m = regex.Match(nugetCache)
-                if m.Success then
-                    let version = m.Groups.[1].Value
-                    match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
-                    // wsfscservice process reported back, it doesn't have the project cached
-                    | Error ErrorCode.ProjectNotCached -> 
-                        printfn "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
-                        dotnetBuild () 
-                    // the type of the project is not ws buildable (WIG or Proxy)
-                    | Error ErrorCode.ProjectTypeNotPermitted -> 
-                        printfn "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
-                        dotnetBuild()
-                    // cache of the project is outdated
-                    | Error ErrorCode.ProjectOutdated ->
-                        printfn "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
-                        dotnetBuild()
-                    | Some errorCode -> errorCode
-                    | None ->
-                        printfn "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
-                        dotnetBuild()
-                else
-                    printfn "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                | :? UnauthorizedAccessException | :? Security.SecurityException -> 
+                    printfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
+                    dotnetBuild()
+                | :? FileNotFoundException | :? DirectoryNotFoundException ->
+                    printfn """Cache file for downloaded nuget packages is not found. Try the following:
+                    
+        - Add WebSharper.FSharp nuget to the current project (for example "> dotnet add package WebSharper.FSharp")
+        - Build prior running "dotnet ws build". Build will run in a moment.
+        """
+                    dotnetBuild()
+                | :? IOException ->
+                    printfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
+                    dotnetBuild()
+                | x ->
+                    printfn """Couldn't build project because: %s
+    
+        Fallback to "dotnet build".
+        """                         x.Message
                     dotnetBuild()
             with
             | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-                printfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
-                dotnetBuild()
-            | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                printfn """Cache file for downloaded nuget packages is not found. Try the following:
-                    
-    - Add WebSharper.FSharp nuget to the current project (for example "> dotnet add package WebSharper.FSharp")
-    - Build prior running "dotnet ws build". Build will run in a moment.
-    """
-                dotnetBuild()
-            | :? IOException ->
-                printfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
-                dotnetBuild()
+                PrintHelpers.error "Couldn't search for a project file (Unauthorized)"
+                1
+            | :? System.ArgumentException ->
+                PrintHelpers.error "Couldn't search for a single project file in the current directory."
+                1
             | x ->
-                printfn """Couldn't build project because: %s
-    
-    Fallback to "dotnet build".
-    """                         x.Message
-                dotnetBuild()
-        with
-        | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-            PrintHelpers.error "Couldn't search for a project file (Unauthorized)"
-            1
-        | :? System.ArgumentException ->
-            PrintHelpers.error "Couldn't search for a single project file in the current directory."
-            1
-        | x ->
-            PrintHelpers.error "Error while building: %s." x.Message
-            1
+                PrintHelpers.error "Error while building: %s." x.Message
+                1
+        finally
+            Environment.CurrentDirectory <- currentPath
+            
 
 type CompileArguments =
     | [<AltCommandLine("-o")>] Output of string
