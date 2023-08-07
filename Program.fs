@@ -165,35 +165,45 @@ let main argv =
             | _ ->
                 PrintHelpers.error "Couldn't find nuget packages root folder."
                 1
-        | Stop stopParams -> 
+        | Stop stopParams ->
+            let versionArg = stopParams.TryGetResult StopArguments.Version
             let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
                 try
                     let killOrSend (x: Process) = 
                         if stopParams.Contains Force then
                             x.Kill()
-                            printfn "Stopped wsfscservice with PID: (%i)" x.Id
+                            printfn "Stopped wsfscservice with PID=%i" x.Id
+                            (0, true)
                         else
                             let clientPipe = clientPipeForLocation x.MainModule.FileName
                             sendOneMessage clientPipe {args = [|"exit"|]}
-                            printfn "Stop signal sent to wsfscservice with PID: (%i)" x.Id
-                    match stopParams.TryGetResult StopArguments.Version with
+                            printfn "Stop signal sent to WebSharper Booster with PID=%i" x.Id
+                            (0, true)
+                    match versionArg with
                     | Some v -> 
                         if proc.MainModule.FileVersionInfo.FileVersion = v then
                             killOrSend proc
                         else
-                            printfn "Could not find running service with version: %s" v
+                            if returnCode <> 0 then
+                                (1, successfulErrorPrint)
+                            else
+                                (returnCode, successfulErrorPrint)
                     | None ->
                         killOrSend proc
-                    (returnCode, successfulErrorPrint)
                 with
                 | _ ->
                     try
-                        PrintHelpers.error "Couldn't kill process with PID: (%i)" proc.Id
+                        PrintHelpers.error "Couldn't kill process with PID=%i" proc.Id
                         (1, successfulErrorPrint)
                     with
                     | _ -> (1, false)
             try
-                let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (0, true)
+                let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (1, true)
+                match versionArg with
+                | Some v ->
+                    if returnCode <> 0 then
+                        printfn "Could not find running service with version: %s" v
+                | None -> ()
                 if successfulErrorPrint |> not then
                     PrintHelpers.error "Couldn't read processes."
                 if returnCode = 0 && stopParams.TryGetResult StopArguments.Version |> Option.isNone && stopParams.TryGetResult StopArguments.``Clear-Cache`` |> Option.isSome then
