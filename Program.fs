@@ -99,6 +99,9 @@ let main argv =
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
 
+        let pattern = @"(\d+\.\d+\.\d+\.\d+[\w\d-]*)"
+        let regexOptions = RegexOptions.Singleline
+
         match subCommand with
         | Info ->
             printfn "%d.%d.%d" v.Major v.Minor v.Build
@@ -170,19 +173,26 @@ let main argv =
             let versionArg = stopParams.TryGetResult StopArguments.Version
             let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
                 try
+                    let fd = proc.MainModule.FileVersionInfo.FileDescription
                     let killOrSend (x: Process) = 
                         if stopParams.Contains Force then
                             x.Kill()
-                            printfn "Stopped wsfscservice with PID=%i" x.Id
+                            printfn "Stopped %s with PID=%i" fd x.Id
                             (0, true)
                         else
                             let clientPipe = clientPipeForLocation x.MainModule.FileName
                             sendOneMessage clientPipe {args = [|"exit"|]}
-                            printfn "Stop signal sent to WebSharper Booster with PID=%i" x.Id
+                            printfn "Stop signal sent to %s with PID=%i" fd x.Id
                             (0, true)
                     match versionArg with
-                    | Some v -> 
-                        if proc.MainModule.FileVersionInfo.FileVersion = v then
+                    | Some v ->
+                        let versionToMatch =
+                            let regex = Regex.Match(fd, pattern, regexOptions)
+                            if regex.Success then
+                                regex.Value
+                            else
+                                proc.MainModule.FileVersionInfo.FileVersion
+                        if versionToMatch = v then
                             killOrSend proc
                         else
                             if returnCode <> 0 then
@@ -212,11 +222,19 @@ let main argv =
                 returnCode
             with
             | _ -> 1
-        | List -> 
+        | List ->
             try
                 let procInfos = 
                     Process.GetProcessesByName("wsfscservice")
-                    |> Array.map (fun proc -> sprintf "version: %s; path: %s" proc.MainModule.FileVersionInfo.FileVersion proc.MainModule.FileName)
+                    |> Array.map (fun proc ->
+                        let versionToQueryBy =
+                            let regex = Regex.Match(proc.MainModule.FileVersionInfo.FileDescription, pattern, regexOptions)
+                            if regex.Success then
+                                regex.Value
+                            else
+                                proc.MainModule.FileVersionInfo.FileVersion
+                        sprintf "version: %s; path: %s" versionToQueryBy proc.MainModule.FileName
+                    )
                 if procInfos.Length = 0 then
                     printfn "There are no wsfscservices running."
                 else
