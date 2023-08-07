@@ -93,7 +93,8 @@ let main argv =
     let v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
     let helpMessage =
         sprintf "WebSharper .NET CLI version %d.%d.%d" v.Major v.Minor v.Build
-    let parser = ArgumentParser.Create<Argument>(programName = "dotnet ws", helpTextMessage = helpMessage, checkStructure = true)
+    printfn "%s" helpMessage
+    let parser = ArgumentParser.Create<Argument>(programName = "dotnet ws", checkStructure = true)
     try
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
