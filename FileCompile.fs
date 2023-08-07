@@ -182,11 +182,7 @@ module BuildHelpers =
                     printfn "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                    printfn """Cache file for downloaded nuget packages is not found. Try the following:
-                    
-        - Add WebSharper.FSharp nuget to the current project (for example "> dotnet add package WebSharper.FSharp")
-        - Build prior running "dotnet ws build". Build will run in a moment.
-        """
+                    printfn "Cache file for downloaded nuget packages is not found. Starting an msbuild now."
                     dotnetBuild()
                 | :? IOException ->
                     printfn "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
