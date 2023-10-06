@@ -19,6 +19,17 @@ module BuildHelpers =
             Console.ForegroundColor <- fc
             { new IDisposable with
                   member x.Dispose() = Console.ForegroundColor <- current }
+
+        let infoColor () =
+            match Console.BackgroundColor with
+            | ConsoleColor.Black
+            | ConsoleColor.DarkBlue
+            | ConsoleColor.DarkCyan
+            | ConsoleColor.DarkGray ->
+                ConsoleColor.Gray
+            | _ ->
+                ConsoleColor.DarkGray
+
         
         let cprintf color str  = Printf.kprintf (fun s -> use c = consoleColor color in printf "%s" s) str
         let cprintfn color str = Printf.kprintf (fun s -> use c = consoleColor color in printfn "%s" s) str
@@ -27,7 +38,7 @@ module BuildHelpers =
 
         let error indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.Red in eprintfn "%s%s" (getIndentString indent) s) str
         let warning indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.Yellow in printfn "%s%s" (getIndentString indent) s) str
-        let info indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.DarkBlue in printfn "%s%s" (getIndentString indent) s) str
+        let info indent str = Printf.kprintf (fun s -> use c = consoleColor (infoColor ()) in printfn "%s%s" (getIndentString indent) s) str
 
         let log indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.White in printfn "%s%s" (getIndentString indent) s) str
 
