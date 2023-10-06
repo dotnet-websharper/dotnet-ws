@@ -527,13 +527,12 @@ type FileWatchHandler(fsx: string, args) =
 
 let CompileFile (arguments: ParseResults<CompileArguments>) =
     match arguments.TryGetResult CompileArguments.Watch, arguments.TryGetResult CompileArguments.FilePath with
-    | None, _
-    | Some _, None ->
-        Compile 0 arguments
     | Some _, Some fp ->
-        let rootedPath = Path.Combine(System.Environment.CurrentDirectory, fp)
+        let rootedPath = Path.Combine(System.Environment.CurrentDirectory, fp) |> Path.GetFullPath
         let watcher = FileWatchHandler(rootedPath, arguments)
         watcher.Initialize()
         while true do
             ()
         0
+    | _, _ ->
+        Compile 0 arguments
