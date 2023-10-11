@@ -160,6 +160,7 @@ module BuildHelpers =
                         (int ErrorCode.UnexpectedFinish)
                 let tryCheckVersion (proc: Process) (version: string) =
                     if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
+                        printfn "ATRHWBTRHRYH"
                         sendCompile proc |> Some
                     else
                         None
@@ -172,6 +173,7 @@ module BuildHelpers =
                     let m = regex.Match(nugetCache)
                     if m.Success then
                         let version = m.Groups.[1].Value
+                        printfn "VERSION: %s" version
                         match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                         // wsfscservice process reported back, it doesn't have the project cached
                         | Error ErrorCode.ProjectNotCached -> 
@@ -185,7 +187,9 @@ module BuildHelpers =
                         | Error ErrorCode.ProjectOutdated ->
                             PrintHelpers.info indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
                             dotnetBuild()
-                        | Some errorCode -> errorCode
+                        | Some errorCode ->
+                            printfn "%i" errorCode
+                            errorCode
                         | None ->
                             PrintHelpers.info indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
                             dotnetBuild()
@@ -197,7 +201,7 @@ module BuildHelpers =
                     PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                    PrintHelpers.info indent "Cache file for downloaded nuget packages is not found. Starting an msbuild now."
+                    PrintHelpers.info indent "Cache file for restored nuget packages is not found. Starting an msbuild now."
                     dotnetBuild()
                 | :? IOException ->
                     PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
@@ -219,6 +223,7 @@ module BuildHelpers =
                 PrintHelpers.error indent "Error while building: %s." x.Message
                 1
         finally
+            printfn "qw|EQWGTERAGHEs"
             Environment.CurrentDirectory <- currentPath
             
 

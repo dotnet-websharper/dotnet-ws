@@ -233,7 +233,7 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                 dotnetBuild()
             | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                PrintHelpers.info indent """Cache file for downloaded nuget packages is not found. Starting an msbuild now."""
+                PrintHelpers.info indent """Cache file for restored nuget packages is not found. Starting an msbuild now."""
                 dotnetBuild()
             | :? IOException ->
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
