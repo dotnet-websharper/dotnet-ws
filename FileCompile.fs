@@ -160,7 +160,6 @@ module BuildHelpers =
                         (int ErrorCode.UnexpectedFinish)
                 let tryCheckVersion (proc: Process) (version: string) =
                     if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
-                        printfn "ATRHWBTRHRYH"
                         sendCompile proc |> Some
                     else
                         None
@@ -173,7 +172,6 @@ module BuildHelpers =
                     let m = regex.Match(nugetCache)
                     if m.Success then
                         let version = m.Groups.[1].Value
-                        printfn "VERSION: %s" version
                         match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                         // wsfscservice process reported back, it doesn't have the project cached
                         | Error ErrorCode.ProjectNotCached -> 
@@ -223,7 +221,6 @@ module BuildHelpers =
                 PrintHelpers.error indent "Error while building: %s." x.Message
                 1
         finally
-            printfn "qw|EQWGTERAGHEs"
             Environment.CurrentDirectory <- currentPath
             
 
