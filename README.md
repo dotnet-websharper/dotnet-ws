@@ -30,3 +30,12 @@ OPTIONS:
     -f, --force           Force the specified operation (used for the stop subcommand).
     --help                Display this list of options.
 ```
+
+# Notes
+
+Please check the following compatibility matrix for usage with specific `WebSharper.FSharp` package versions
+
+| dotnet-vs | WebSharper.FSharp |
+|:--:|:--:|
+| <= 0.1.17 | < 8.0.0.514-beta2 |
+| > 0.1.17 | >= 8.0.0.514-beta2 |

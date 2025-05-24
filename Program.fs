@@ -153,7 +153,8 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                         let printResponse (message: obj) = 
                             async {
                                 // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
-                                match message :?> string with
+                                let jE = message :?> System.Text.Json.JsonElement
+                                match jE.GetString()  with
                                 | StdOut n ->
                                     PrintHelpers.info indent "%s" n
                                     return None
@@ -166,7 +167,7 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                                     PrintHelpers.error indent "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
                                     return Some (int OutputErrorCode.UnrecognizedMessage)
                             }
-                        let! errorCode = readingMessages clientPipe printResponse
+                        let! errorCode = readingMessages clientPipe printResponse ignore
                         match errorCode with
                         | Some x -> return x
                         | None -> 
@@ -515,6 +516,7 @@ let main argv =
                         startInfo.CreateNoWindow <- true
                         startInfo.UseShellExecute <- false
                         startInfo.WindowStyle <- ProcessWindowStyle.Hidden
+                        startInfo.Arguments <- "./websharper.log"
                         try
                             Process.Start(startInfo) |> ignore
                             PrintHelpers.info 0 "version: %s; path: %s Started." version cmdFullPath

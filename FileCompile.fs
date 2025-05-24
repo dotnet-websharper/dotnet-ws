@@ -4,7 +4,6 @@ open System
 open System.Diagnostics
 open System.IO
 open System.IO.Pipes
-open System.Runtime.Serialization.Formatters.Binary
 open System.Text
 open System.Text.RegularExpressions
 open System.Threading
@@ -12,6 +11,7 @@ open Argu
 open WebSharper.Compiler.WsFscServiceCommon
 
 module BuildHelpers =
+    open System.Runtime.InteropServices
 
     module PrintHelpers =
         let consoleColor (fc : ConsoleColor) = 
@@ -94,7 +94,12 @@ module BuildHelpers =
 
     let clientPipeForLocation (location:string) =
         let location = IO.Path.GetDirectoryName(location)
-        let pipeName = (location, "WsFscServicePipe") |> Path.Combine |> hashPath
+        let pipeNameRaw = (location, "WsFscServicePipe") |> System.IO.Path.Combine |> hashPath
+        let pipeName =
+            if RuntimeInformation.IsOSPlatform(OSPlatform.Windows) then
+                pipeNameRaw  // Windows uses simple pipe names
+            else
+                Path.Combine(Path.GetTempPath(), pipeNameRaw) // Linux/macOS require 
         let serverName = "." // local machine server name
         new NamedPipeClientStream( serverName, //server name, local machine is .
                              pipeName, // name of the pipe,
@@ -103,17 +108,20 @@ module BuildHelpers =
                              ||| PipeOptions.Asynchronous)
     
     let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
-        let bf = BinaryFormatter();
-        use ms = new MemoryStream()
-        // args going binary serialized to the service.
-        bf.Serialize(ms, message);
-        ms.Flush();
-        ms.Position <- 0L
-        clientPipe.Connect()
-        let tryCompileTimeOutSeconds = 5.0
-        use cancellationTokenSource = new CancellationTokenSource(TimeSpan.FromSeconds(tryCompileTimeOutSeconds))
-        ms.CopyToAsync(clientPipe, cancellationTokenSource.Token) |> Async.AwaitTask |> Async.RunSynchronously
-        clientPipe.Flush()
+        let options = Json.JsonSerializerOptions()
+        options.Encoder <- Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        let res = Json.JsonSerializer.Serialize(message, options)
+        let bytes = Encoding.UTF8.GetBytes res
+        clientPipe.Connect(2000)
+        if clientPipe.IsConnected then
+            clientPipe.ReadMode <- PipeTransmissionMode.Byte
+            clientPipe.Write(System.BitConverter.GetBytes(bytes.Length), 0, 4) // prepend with message length
+            clientPipe.Write(bytes, 0, bytes.Length)
+            clientPipe.Flush()
+            if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
+                clientPipe.WaitForPipeDrain()
+        else
+            failwith "Pipe is not initialized yet"
     
     let buildProjectFile indent (projectFile: string) (isDebug: bool) =
         let currentPath = Environment.CurrentDirectory
@@ -128,7 +136,8 @@ module BuildHelpers =
                             let printResponse (message: obj) = 
                                 async {
                                     // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
-                                    match message :?> string with
+                                    let jE = message :?> Json.JsonElement
+                                    match jE.GetString() with
                                     | StdOut n ->
                                         PrintHelpers.info indent "%s" n
                                         return None
@@ -141,7 +150,7 @@ module BuildHelpers =
                                         PrintHelpers.error indent "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
                                         return Some (int OutputErrorCode.UnrecognizedMessage)
                                 }
-                            let! errorCode = readingMessages clientPipe printResponse
+                            let! errorCode = readingMessages clientPipe printResponse (ignore)
                             match errorCode with
                             | Some x -> return x
                             | None -> 
@@ -434,7 +443,7 @@ let Compile indent (arguments: ParseResults<CompileArguments>) =
         let folderToCreateIfNeeded =
             match isStandalone with
             | Some _ -> Path.GetDirectoryName(rootedPath)
-            | None _ ->
+            | None ->
                 let encodedFolderName = getEncodedFolderName adjustedDependencies extension
                 Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData), "ws-compile", encodedFolderName)
         let isTS = arguments.TryGetResult CompileArguments.TypeScript |> Option.isSome
