@@ -261,6 +261,8 @@ Fallback to "dotnet build".
 
 let dotnetBinaryFolder =
     [
+        "net10.0"
+        "net9.0"
         "net8.0"
         "net7.0"
         "net6.0"
