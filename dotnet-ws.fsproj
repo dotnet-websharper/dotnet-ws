@@ -15,7 +15,7 @@
     <RepositoryUrl>https://github.com/dotnet-websharper/dotnet-ws</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <Description>Dotnet tool to manage WebSharper related projects</Description>
+    <Description>.NET tool to manage/build WebSharper projects</Description>
     <EnableUnsafeBinaryFormatterSerialization>true</EnableUnsafeBinaryFormatterSerialization>
   </PropertyGroup>
 
