@@ -185,9 +185,10 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                     PrintHelpers.error indent "Couldn't send compile message to the build server: %s." x.Message
                     (int ErrorCode.UnexpectedFinish)
             let tryCheckVersion (proc: Process) (version: string) =
-                if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
+                match tryGetProcessVersion proc with
+                | Some serviceVersion when version.StartsWith serviceVersion ->
                     sendCompile proc |> Some
-                else
+                | _ ->
                     None
             let dotnetBuild() =
                 let startInfo = ProcessStartInfo("dotnet")
@@ -234,7 +235,7 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                 dotnetBuild()
             | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                PrintHelpers.info indent """Cache file for restored nuget packages is not found. Starting an msbuild now."""
+                PrintHelpers.info indent """Cache file for restored nuget packages is not found (first build or after a clean). Fallback to "dotnet build"."""
                 dotnetBuild()
             | :? IOException ->
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
@@ -445,9 +446,6 @@ let main argv =
         let result = parser.Parse argv
         let subCommand = result.GetSubCommand()
 
-        let pattern = @"(\d+\.\d+\.\d+\.\d+[\w\d-]*)"
-        let regexOptions = RegexOptions.Singleline
-
         match subCommand with
         | Info ->
             PrintHelpers.info 0 "%d.%d.%d" v.Major v.Minor v.Build
@@ -542,7 +540,12 @@ let main argv =
             let versionArg = stopParams.TryGetResult StopArguments.Version
             let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
                 try
-                    let fd = proc.MainModule.FileVersionInfo.FileDescription
+                    let fd =
+                        let fileInfo = proc.MainModule.FileVersionInfo
+                        if String.IsNullOrWhiteSpace fileInfo.FileDescription then
+                            Path.GetFileName proc.MainModule.FileName
+                        else
+                            fileInfo.FileDescription
                     let killOrSend (x: Process) = 
                         if stopParams.Contains Force then
                             x.Kill()
@@ -555,13 +558,8 @@ let main argv =
                             (0, true)
                     match versionArg with
                     | Some v ->
-                        let versionToMatch =
-                            let regex = Regex.Match(fd, pattern, regexOptions)
-                            if regex.Success then
-                                regex.Value
-                            else
-                                proc.MainModule.FileVersionInfo.FileVersion
-                        if versionToMatch = v then
+                        let versionToMatch = tryGetProcessVersion proc
+                        if versionToMatch = Some v then
                             killOrSend proc
                         else
                             if returnCode <> 0 then
@@ -597,11 +595,8 @@ let main argv =
                     Process.GetProcessesByName("wsfscservice")
                     |> Array.map (fun proc ->
                         let versionToQueryBy =
-                            let regex = Regex.Match(proc.MainModule.FileVersionInfo.FileDescription, pattern, regexOptions)
-                            if regex.Success then
-                                regex.Value
-                            else
-                                proc.MainModule.FileVersionInfo.FileVersion
+                            tryGetProcessVersion proc
+                            |> Option.defaultValue "unknown"
                         sprintf "version: %s; path: %s" versionToQueryBy proc.MainModule.FileName
                     )
                 if procInfos.Length = 0 then

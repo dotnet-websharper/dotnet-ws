@@ -92,6 +92,23 @@ module BuildHelpers =
         dotnetProc.WaitForExit()
         dotnetProc.ExitCode
 
+    let versionPattern = @"(\d+\.\d+\.\d+\.\d+[\w\d-]*)"
+
+    /// Best-effort extraction of the WebSharper.FSharp version of a running
+    /// wsfscservice process. On Windows the version is read from the embedded
+    /// file version info; on Unix (macOS/Linux) there is no version resource,
+    /// so it is parsed from the executable path instead, which has the form
+    /// .../websharper.fsharp/<version>/tools/<tfm>/<rid>/wsfscservice.
+    let tryGetProcessVersion (proc: Process) =
+        let fileInfo = proc.MainModule.FileVersionInfo
+        [ fileInfo.FileDescription; fileInfo.FileVersion; proc.MainModule.FileName ]
+        |> List.tryPick (fun source ->
+            if String.IsNullOrWhiteSpace source then
+                None
+            else
+                let m = Regex.Match(source, versionPattern, RegexOptions.Singleline)
+                if m.Success then Some m.Value else None)
+
     let clientPipeForLocation (location:string) =
         let location = IO.Path.GetDirectoryName(location)
         let pipeNameRaw = (location, "WsFscServicePipe") |> System.IO.Path.Combine |> hashPath
@@ -168,9 +185,10 @@ module BuildHelpers =
                         PrintHelpers.error indent "Couldn't send compile message to the build server: %s." x.Message
                         (int ErrorCode.UnexpectedFinish)
                 let tryCheckVersion (proc: Process) (version: string) =
-                    if version.StartsWith proc.MainModule.FileVersionInfo.FileVersion then
+                    match tryGetProcessVersion proc with
+                    | Some serviceVersion when version.StartsWith serviceVersion ->
                         sendCompile proc |> Some
-                    else
+                    | _ ->
                         None
                 let dotnetBuild () =
                     dotnetBuild projectFile isDebug
@@ -208,7 +226,7 @@ module BuildHelpers =
                     PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                    PrintHelpers.info indent "Cache file for restored nuget packages is not found. Starting an msbuild now."
+                    PrintHelpers.info indent "Cache file for restored nuget packages is not found (first build or after a clean). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? IOException ->
                     PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
