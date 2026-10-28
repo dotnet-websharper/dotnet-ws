@@ -1,3 +1,4 @@
+
 name: Release dotnet-ws tool
 
 on:
@@ -6,6 +7,10 @@ on:
 jobs:
   release:
     runs-on: windows-latest
+
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Setup .NET
@@ -24,11 +29,19 @@ jobs:
         env:
           VERSION_PATCH: ${{ github.run_number }}
 
+      - name: Authenticate with NuGet
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: intellifactory
+
       - name: Push package
-        run:
-          dotnet nuget push *.nupkg
-          --api-key ${{ secrets.NUGET_API_KEY }}
-          --source https://api.nuget.org/v3/index.json
-          --skip-duplicate
-          --timeout 1800
+        run: |
+          dotnet nuget push *.nupkg `
+            --api-key "$env:NUGET_API_KEY" `
+            --source https://api.nuget.org/v3/index.json `
+            --skip-duplicate `
+            --timeout 1800
         working-directory: publish
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
