@@ -32,6 +32,12 @@ OPTIONS:
     --help                Display this list of options.
 ```
 
+# Dependencies
+
+The only external prerequisite is the **.NET SDK** (`dotnet`). It provides the CLI, MSBuild and NuGet support that `dotnet ws` invokes (`dotnet build`, `dotnet add package`, restore). The tool targets `net8.0` but rolls forward, so it runs on any newer installed runtime (.NET 9/10/11).
+
+WebSharper packages and the Booster service (`wsfscservice`) are not prerequisites — the tool obtains them on the fly (through the packages your project references and, for `dotnet ws compile`, a generated project it sets up itself).
+
 # Notes
 
 Please check the following compatibility matrix for usage with specific `WebSharper.FSharp` package versions
