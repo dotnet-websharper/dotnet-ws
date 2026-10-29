@@ -30,6 +30,47 @@ compilation.
   `~/.nuget/packages/dotnet-ws/<version>` won't be re-fetched — bump the
   version (or clear that cache folder) before installing.
 
+## Releasing
+
+Releasing is two independent steps: **publish to NuGet** (CI), then **create the
+GitHub Release** (tag + notes). The NuGet run determines the version.
+
+### 1. NuGet publish (workflow)
+- Workflow: `.github/workflows/release.yml` (`Release dotnet-ws tool`), manual
+  `workflow_dispatch` (runs on `windows-latest`).
+- Trigger: `gh workflow run "Release dotnet-ws tool" --repo dotnet-websharper/dotnet-ws --ref main`
+- It runs `build.cmd` with `VERSION_PATCH=${{ github.run_number }}`, so the
+  published version is **`10.0.<github.run_number>`** — the version comes from
+  the run, not from a git tag.
+- Auth is NuGet **trusted publishing** (`NuGet/login@v1`, user `intellifactory`,
+  OIDC) — no API key needed.
+- Watch/verify: `gh run watch <id> --repo dotnet-websharper/dotnet-ws --exit-status`;
+  the version is the run's `run_number`
+  (`gh api repos/dotnet-websharper/dotnet-ws/actions/runs/<id> --jq .run_number`),
+  also visible in the "Build and package" step log
+  (`Successfully created package '…\dotnet-ws.10.0.<N>.nupkg'`).
+
+### 2. GitHub Release
+- Gather the notes: `git log --oneline <prev-tag>..main` (e.g. `10.0.22..main`).
+- Conventions (matching the most recent releases):
+  - title `dotnet-ws <version>`, tag `<version>` (e.g. `10.0.23`);
+  - created as a **draft** (publish it from the Releases page when ready);
+  - body = a short `*` bullet list, then
+    `Full changelog [here](https://github.com/dotnet-websharper/dotnet-ws/compare/<prev-tag>...<new-tag>)`.
+    (Older `0.1.x` releases instead used `## What's Changed` + `**Full Changelog**: <link>`.)
+- **Draft releases do not create the git tag** — create/push it explicitly at
+  the released commit (main's tip at publish time):
+  `git tag 10.0.N <sha> && git push origin 10.0.N`.
+- Create:
+  `gh release create 10.0.N --repo dotnet-websharper/dotnet-ws --target <sha> --title "dotnet-ws 10.0.N" --draft --notes-file <file>`
+- A draft's page URL shows an `untagged-<hash>` placeholder; it becomes
+  `/releases/tag/10.0.N` once published. The release's `tag_name` is correct
+  even while it's a draft.
+
+Access needed: a GitHub token with **`repo`** + **`workflow`** scopes (to push,
+tag, and `gh workflow run`). NuGet needs nothing (trusted publishing). Without
+that, trigger the workflow from the Actions UI and create the release manually.
+
 ## Repo map
 
 | Path | What it is |
@@ -101,8 +142,9 @@ matching running `wsfscservice`, send `compile:<project>` and stream `n:` / `e:`
 - F# only, no `.fsi` files.
 - CLI parsing via Argu (`Argument` DU with `IArgParserTemplate.Usage`). Keep
   help text consistent with the README.
-- All output goes through `BuildHelpers.PrintHelpers` (`info` / `error` /
-  `warning`, with indentation). Keep fallback messages uniform:
+- All output goes through `BuildHelpers.PrintHelpers`: `text` (normal output,
+  terminal default color), `info` (optional/diagnostic — e.g. `--time` stage
+  timings), `error`/`warning` (red/yellow). Keep fallback messages uniform:
   `"<reason>. Fallback to \"dotnet build\"."`
 - Shell out with `ProcessStartInfo("dotnet")`; always restore
   `Environment.CurrentDirectory` in a `finally`.
