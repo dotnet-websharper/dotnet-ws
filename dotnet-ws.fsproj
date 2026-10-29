@@ -24,6 +24,7 @@
     <None Include="LICENSE.md" />
     <None Include="README.md" />
     <Compile Include="FileCompile.fs" />
+    <Compile Include="BuildInfo.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

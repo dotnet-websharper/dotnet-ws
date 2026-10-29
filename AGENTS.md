@@ -36,6 +36,7 @@ compilation.
 | --- | --- |
 | `Program.fs` | Entry point; Argu CLI types; `build`/`start`/`stop`/`list`/`watch`; process + service discovery; the watch handlers |
 | `FileCompile.fs` | `BuildHelpers` (build/fallback, pipe client, version discovery, `buildProjectFile` fast path); one-file `compile`; `projectFileSetup` |
+| `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.json` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
 | `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`) — must stay in sync with `core/src/compiler/WebSharper.FSharp.Service` |
 | `dotnet-ws.sln`, `dotnet-ws.fsproj`, `WebSharper.Compiler/…` | Solution and projects |
 | `build.cmd`, `.github/workflows/release.yml` | Packaging and release (manual `workflow_dispatch`, NuGet trusted publishing) |
@@ -43,24 +44,35 @@ compilation.
 
 ## How `dotnet ws build` works
 
-The fast path (see `build` in `Program.fs` and `buildProjectFile` in `FileCompile.fs`):
+`build` in `Program.fs` resolves a target and then:
 
-1. Resolve the target (`resolveBuildTarget`): `--project` if given, else a single
-   `*.fsproj` in the current directory, else a `.sln`/`.slnx`, else walk up the
-   parents — stopping at (and including) the nearest directory that has a
-   `wsconfig.json` (a WebSharper project root). A solution target is built with
-   `dotnet build <sln>` (see below) and stops there; a single project takes the
-   fast path. cwd is switched to the target's directory (paths are made absolute
-   first).
-2. Read `obj/project.nuget.cache` and regex the
-   `websharper.fsharp.<version>.nupkg.sha512` entry to learn the
-   WebSharper.FSharp version.
-3. Find a running `wsfscservice` whose version matches, send it
-   `compile:<project>` over the named pipe, and stream back `n:` / `e:` / `x:`
-   messages (`stdout` / `stderr` / finish code).
-4. Any failure — missing cache, no matching service, project not cached /
-   outdated / type not permitted, IO/unauthorized — prints a reason and does
-   `Fallback to "dotnet build"`.
+- **Solution** (`resolveBuildTarget` → `Solution`): runs a *capture build* — an
+  ordinary `dotnet build <sln>` with the capture target injected — which builds
+  the solution and seeds a manifest for every project.
+- **Project** (`SingleProject`): reads the transitive project closure from the
+  cached `obj/wsbuild.json` manifests (`BuildInfo.tryClosure`). If every
+  manifest is present and fresh, it fast-paths each project in the closure,
+  references first (`BuildInfo.topoSort`). Otherwise (cold, or a structural
+  change) it runs a capture build of the project, which also rebuilds and
+  re-captures its dependencies.
+
+### The capture mechanism (`BuildInfo.fs`)
+The capture build injects `-p:CustomAfterMicrosoftCommonTargets=<ws-capture.targets>`
+and `-p:WsCaptureBuildInfo=true`. That targets file is imported into every
+project and, `AfterTargets="Build"`, writes `obj/wsbuild.json`:
+`project`, `configuration`, `tfm`, `refs` (evaluated `ProjectReference` full
+paths) and `fingerprint`. Because it runs post-evaluation, imports, conditions
+and computed items are already resolved — no project/solution parsing.
+
+Freshness is a structural fingerprint: the project file, its
+`Directory.Build.*`/`Directory.Packages.props` chain, `project.assets.json` and
+the generated NuGet props/targets. Source (`.fs`) edits do **not** invalidate a
+manifest.
+
+The per-project fast path (`tryBuildProjectService`) is the original one:
+read `obj/project.nuget.cache` for the `WebSharper.FSharp` version, find a
+matching running `wsfscservice`, send `compile:<project>` and stream `n:` / `e:`
+/ `x:`; on any failure fall back to `dotnet build "<project>"`.
 
 ## Key concepts
 
@@ -99,12 +111,22 @@ The fast path (see `build` in `Program.fs` and `buildProjectFile` in `FileCompil
 
 ## Known limitations / open problems
 
-- **Multi-project solutions** are supported only via a `dotnet build` passthrough
-  (the MSBuild WebSharper targets still drive the Booster); the Booster fast path
-  in `Program.fs` remains single-project. Building each solution project through
-  the fast path, in dependency order, is the planned follow-up. A directory with
-  multiple `.fsproj` files and no solution reports *"Found more than one project
-  file…"*.
+- **Multi-project support is closure-based.** `dotnet ws build` inside a project
+  fast-paths that project and its transitive `ProjectReference` dependencies, in
+  order. Running at a solution root still does a full MSBuild build (it seeds the
+  manifests but doesn't fast-path the whole solution).
+- The captured graph is `ProjectReference`-based: solution-level
+  `ProjectDependencies` and references produced *during* a build by tasks are not
+  captured. Multi-targeted projects share one `obj/wsbuild.json` (last TFM wins).
+  Projects that don't import `Microsoft.Common.targets` get no manifest and fall
+  back to `dotnet build`.
+- Freshness is mtime-based over a stored file list, so it can't see **set growth**
+  from globs (a newly created file matched by `**/*.targets`,
+  `Content Include="dir/**"`, etc. without editing a tracked file). Accepted
+  limitation: explicitly-included artifacts are caught, because adding one edits
+  the project file (whose mtime is tracked).
+- A directory with multiple `.fsproj` files and no solution reports *"Found more
+  than one project file…"*.
 - `.config/dotnet-tools.json` pins a long-obsolete version.
 - `dotnetBinaryFolder` is a hand-maintained list that must keep pace with the
   TFMs shipped by WebSharper.FSharp.
