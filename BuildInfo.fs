@@ -7,7 +7,7 @@ module BuildInfo
 //
 // A small targets file is injected into the build via
 // CustomAfterMicrosoftCommonTargets. After each project's Build target it
-// writes obj/wsbuild.json with the evaluated data we need. Because it runs
+// writes obj/wsbuild.info with the evaluated data we need. Because it runs
 // post-evaluation, imports/conditions/computed items are already resolved.
 //
 // The manifest is invalidated by a structural fingerprint: the project file,
@@ -30,7 +30,7 @@ type ProjectInfo =
         Fingerprint: string list
     }
 
-let manifestFileName = "wsbuild.json"
+let manifestFileName = "wsbuild.info"
 
 let manifestPath (projectPath: string) =
     Path.Combine(Path.GetDirectoryName(Path.GetFullPath projectPath), "obj", manifestFileName)
@@ -52,7 +52,7 @@ let private captureTargets =
       <_WsLine Include="fingerprint=$(_WsFingerprint)" />
     </ItemGroup>
     <MakeDir Directories="$(MSBuildProjectDirectory)/obj" />
-    <WriteLinesToFile File="$(MSBuildProjectDirectory)/obj/wsbuild.json"
+    <WriteLinesToFile File="$(MSBuildProjectDirectory)/obj/wsbuild.info"
                       Lines="@(_WsLine)"
                       Overwrite="true"
                       Encoding="UTF-8" />

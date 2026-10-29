@@ -36,7 +36,7 @@ compilation.
 | --- | --- |
 | `Program.fs` | Entry point; Argu CLI types; `build`/`start`/`stop`/`list`/`watch`; process + service discovery; the watch handlers |
 | `FileCompile.fs` | `BuildHelpers` (build/fallback, pipe client, version discovery, `buildProjectFile` fast path); one-file `compile`; `projectFileSetup` |
-| `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.json` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
+| `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.info` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
 | `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`) — must stay in sync with `core/src/compiler/WebSharper.FSharp.Service` |
 | `dotnet-ws.sln`, `dotnet-ws.fsproj`, `WebSharper.Compiler/…` | Solution and projects |
 | `build.cmd`, `.github/workflows/release.yml` | Packaging and release (manual `workflow_dispatch`, NuGet trusted publishing) |
@@ -50,7 +50,7 @@ compilation.
   ordinary `dotnet build <sln>` with the capture target injected — which builds
   the solution and seeds a manifest for every project.
 - **Project** (`SingleProject`): reads the transitive project closure from the
-  cached `obj/wsbuild.json` manifests (`BuildInfo.tryClosure`). If every
+  cached `obj/wsbuild.info` manifests (`BuildInfo.tryClosure`). If every
   manifest is present and fresh, it fast-paths each project in the closure,
   references first (`BuildInfo.topoSort`). Otherwise (cold, or a structural
   change) it runs a capture build of the project, which also rebuilds and
@@ -59,7 +59,7 @@ compilation.
 ### The capture mechanism (`BuildInfo.fs`)
 The capture build injects `-p:CustomAfterMicrosoftCommonTargets=<ws-capture.targets>`
 and `-p:WsCaptureBuildInfo=true`. That targets file is imported into every
-project and, `AfterTargets="Build"`, writes `obj/wsbuild.json`:
+project and, `AfterTargets="Build"`, writes `obj/wsbuild.info`:
 `project`, `configuration`, `tfm`, `refs` (evaluated `ProjectReference` full
 paths) and `fingerprint`. Because it runs post-evaluation, imports, conditions
 and computed items are already resolved — no project/solution parsing.
@@ -117,7 +117,7 @@ matching running `wsfscservice`, send `compile:<project>` and stream `n:` / `e:`
   manifests but doesn't fast-path the whole solution).
 - The captured graph is `ProjectReference`-based: solution-level
   `ProjectDependencies` and references produced *during* a build by tasks are not
-  captured. Multi-targeted projects share one `obj/wsbuild.json` (last TFM wins).
+  captured. Multi-targeted projects share one `obj/wsbuild.info` (last TFM wins).
   Projects that don't import `Microsoft.Common.targets` get no manifest and fall
   back to `dotnet build`.
 - Freshness is mtime-based over a stored file list, so it can't see **set growth**
