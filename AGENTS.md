@@ -24,8 +24,7 @@ compilation.
   `VERSION=10.0.%VERSION_PATCH%`; the release workflow passes
   `VERSION_PATCH=${{ github.run_number }}`.
 - There is **no automated test suite**. Verify changes against a real
-  WebSharper project (the maintainer keeps samples under `~/ws-testing/*` and
-  `~/projects/*`).
+  WebSharper project.
 - Dogfooding gotcha: packing a version that is already in
   `~/.nuget/packages/dotnet-ws/<version>` won't be re-fetched — bump the
   version (or clear that cache folder) before installing.
