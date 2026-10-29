@@ -108,11 +108,13 @@ and StopArguments =
 
 and BuildArguments =
     | [<AltCommandLine("-p")>] Project of string
+    | [<AltCommandLine("-t")>] Time
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
             | Project _ -> "Specify the project or solution (.sln/.slnx) file to build. Defaults to a single project, or a solution, found in the current or a nearest parent folder."
+            | Time -> "Print the per-stage compilation timings when the build service is used."
 
 /// A resolved `dotnet ws build` target.
 type BuildTarget =
@@ -172,7 +174,7 @@ let resolveBuildTarget (explicitTarget: string option) =
 /// Attempts the WebSharper build-service fast path for a single project,
 /// falling back to `dotnet build` when the service can't serve it. Switches the
 /// current directory to the project and restores it afterwards.
-let private tryBuildProjectService indent (f: Process -> unit) (projectFile: string) : int =
+let private tryBuildProjectService indent (f: Process -> unit) (verbose: bool) (projectFile: string) : int =
     let projectFile = Path.GetFullPath projectFile
     let projectDir = Path.GetDirectoryName projectFile
     let previousDir = Environment.CurrentDirectory
@@ -196,7 +198,10 @@ let private tryBuildProjectService indent (f: Process -> unit) (projectFile: str
                             let jE = message :?> System.Text.Json.JsonElement
                             match jE.GetString()  with
                             | StdOut n ->
-                                PrintHelpers.info indent "%s" n
+                                // By default the build service prints only the total
+                                // compilation time; --time shows every stage/info line.
+                                if verbose || n.Contains "Total compilation time" then
+                                    PrintHelpers.info indent "%s" n
                                 return None
                             | StdErr e ->
                                 PrintHelpers.error indent "%s" e
@@ -278,6 +283,7 @@ Fallback to "dotnet build".
 
 let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>) =
     let projectArgument = buildParams.TryGetResult Project
+    let timeRequested = buildParams.Contains Time
     try
         match resolveBuildTarget projectArgument with
         | NotFound ->
@@ -295,7 +301,7 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
             // Fresh manifests: fast-path every project in the closure, dependencies first.
             | Some infos ->
                 BuildInfo.topoSort infos
-                |> List.fold (fun code info -> max code (tryBuildProjectService indent f info.ProjectPath)) 0
+                |> List.fold (fun code info -> max code (tryBuildProjectService indent f timeRequested info.ProjectPath)) 0
             // Cold or structurally changed: run an ordinary build (with the capture
             // target injected) to (re)generate the manifests.
             | None ->

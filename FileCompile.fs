@@ -86,7 +86,7 @@ module BuildHelpers =
 
     let dotnetBuild project (isDebug: bool) =
         let startInfo = ProcessStartInfo("dotnet")
-        let arguments = sprintf "build %s -c %s" project (if isDebug then "Debug" else "Release")
+        let arguments = sprintf "build \"%s\" -c %s" project (if isDebug then "Debug" else "Release")
         startInfo.Arguments <- arguments
         let dotnetProc = Process.Start(startInfo)
         dotnetProc.WaitForExit()
@@ -352,9 +352,9 @@ let dotnetAddPackage isDebug package project version =
     let arguments =
         match version with
         | None ->
-            sprintf "add %s package %s --prerelease" project package 
+            sprintf "add \"%s\" package %s --prerelease" project package 
         | Some v ->
-            sprintf "add %s package %s -v %s" project package v
+            sprintf "add \"%s\" package %s -v %s" project package v
     startInfo.Arguments <- arguments
     let dotnetProc = Process.Start(startInfo)
     dotnetProc.WaitForExit()
