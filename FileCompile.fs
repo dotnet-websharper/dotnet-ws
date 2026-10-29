@@ -40,6 +40,9 @@ module BuildHelpers =
         let warning indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.Yellow in printfn "%s%s" (getIndentString indent) s) str
         let info indent str = Printf.kprintf (fun s -> use c = consoleColor (infoColor ()) in printfn "%s%s" (getIndentString indent) s) str
 
+        // Normal tool output: print with the terminal's default foreground color.
+        let text indent str = Printf.kprintf (fun s -> printfn "%s%s" (getIndentString indent) s) str
+
         let log indent str = Printf.kprintf (fun s -> use c = consoleColor ConsoleColor.White in printfn "%s%s" (getIndentString indent) s) str
 
     type ErrorCode =
@@ -156,7 +159,7 @@ module BuildHelpers =
                                     let jE = message :?> Json.JsonElement
                                     match jE.GetString() with
                                     | StdOut n ->
-                                        PrintHelpers.info indent "%s" n
+                                        PrintHelpers.text indent "%s" n
                                         return None
                                     | StdErr e ->
                                         PrintHelpers.error indent "%s" e
@@ -202,37 +205,37 @@ module BuildHelpers =
                         match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                         // wsfscservice process reported back, it doesn't have the project cached
                         | Error ErrorCode.ProjectNotCached -> 
-                            PrintHelpers.info indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
+                            PrintHelpers.text indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
                             dotnetBuild () 
                         // the type of the project is not ws buildable (WIG or Proxy)
                         | Error ErrorCode.ProjectTypeNotPermitted -> 
-                            PrintHelpers.info indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
+                            PrintHelpers.text indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
                             dotnetBuild()
                         // cache of the project is outdated
                         | Error ErrorCode.ProjectOutdated ->
-                            PrintHelpers.info indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
+                            PrintHelpers.text indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
                             dotnetBuild()
                         | Some errorCode ->
                             printfn "%i" errorCode
                             errorCode
                         | None ->
-                            PrintHelpers.info indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
+                            PrintHelpers.text indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
                             dotnetBuild()
                     else
-                        PrintHelpers.info indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                        PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
                         dotnetBuild()
                 with
                 | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-                    PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                    PrintHelpers.info indent "Cache file for restored nuget packages is not found (first build or after a clean). Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "Cache file for restored nuget packages is not found (first build or after a clean). Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | :? IOException ->
-                    PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
                     dotnetBuild()
                 | x ->
-                    PrintHelpers.info indent """Couldn't build project because: %s
+                    PrintHelpers.text indent """Couldn't build project because: %s
     
         Fallback to "dotnet build".
         """                         x.Message
@@ -312,7 +315,7 @@ module Files =
 """
 
 let private exitWithError indent (msg: CompileError) =
-    BuildHelpers.PrintHelpers.info indent "%s" <| msg.PrettyPrint()
+    BuildHelpers.PrintHelpers.text indent "%s" <| msg.PrettyPrint()
     msg.ToErrorCode
 
 let parseDependencies path =
@@ -421,7 +424,7 @@ let clearCacheFolder () =
     let directoryInfo = DirectoryInfo path
     if directoryInfo.Exists then
         directoryInfo.Delete(true)
-        BuildHelpers.PrintHelpers.info 0 "%s was cleared" path
+        BuildHelpers.PrintHelpers.text 0 "%s was cleared" path
 
 let copyDirectoryContents (source: string) (dest: string) =
     let sourceDir = source |> DirectoryInfo
@@ -540,7 +543,7 @@ type FileWatchHandler(fsx: string, args) =
         if b.FullPath.ToLower() = fsx.ToLower() then
             mb.Post
             <| fun _ ->
-                BuildHelpers.PrintHelpers.info 0 "Compilation triggered by: %s" b.FullPath
+                BuildHelpers.PrintHelpers.text 0 "Compilation triggered by: %s" b.FullPath
                 let _ = Compile 2 args
                 ()
         else

@@ -198,10 +198,12 @@ let private tryBuildProjectService indent (f: Process -> unit) (verbose: bool) (
                             let jE = message :?> System.Text.Json.JsonElement
                             match jE.GetString()  with
                             | StdOut n ->
-                                // By default the build service prints only the total
-                                // compilation time; --time shows every stage/info line.
-                                if verbose || n.Contains "Total compilation time" then
+                                // --time prints the build service's per-stage output as
+                                // info; otherwise only the total, as normal text.
+                                if verbose then
                                     PrintHelpers.info indent "%s" n
+                                elif n.Contains "Total compilation time" then
+                                    PrintHelpers.text indent "%s" n
                                 return None
                             | StdErr e ->
                                 PrintHelpers.error indent "%s" e
@@ -245,35 +247,35 @@ let private tryBuildProjectService indent (f: Process -> unit) (verbose: bool) (
                 match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
                 // wsfscservice process reported back, it doesn't have the project cached
                 | Error ErrorCode.ProjectNotCached -> 
-                    PrintHelpers.info indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
                     dotnetBuild ()
                 // the type of the project is not ws buildable (WIG or Proxy)
                 | Error ErrorCode.ProjectTypeNotPermitted -> 
-                    PrintHelpers.info indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
                     dotnetBuild ()
                 // cache of the project is outdated
                 | Error ErrorCode.ProjectOutdated ->
-                    PrintHelpers.info indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
+                    PrintHelpers.text indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
                     dotnetBuild ()
                 | Some errorCode -> errorCode
                 | None ->
-                    PrintHelpers.info indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
+                    PrintHelpers.text indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
                     dotnetBuild ()
             else
-                PrintHelpers.info indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
                 dotnetBuild ()
         with
         | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-            PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
+            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
             dotnetBuild ()
         | :? FileNotFoundException | :? DirectoryNotFoundException ->
-            PrintHelpers.info indent """Cache file for restored nuget packages is not found (first build or after a clean). Fallback to "dotnet build"."""
+            PrintHelpers.text indent """Cache file for restored nuget packages is not found (first build or after a clean). Fallback to "dotnet build"."""
             dotnetBuild ()
         | :? IOException ->
-            PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
+            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
             dotnetBuild ()
         | x ->
-            PrintHelpers.info indent """Couldn't build project because: %s
+            PrintHelpers.text indent """Couldn't build project because: %s
 
 Fallback to "dotnet build".
 """                     x.Message
@@ -294,7 +296,7 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
             1
         | Solution solutionFile ->
             Environment.CurrentDirectory <- Path.GetDirectoryName solutionFile
-            PrintHelpers.info indent "Building solution %s with \"dotnet build\"." (Path.GetFileName solutionFile)
+            PrintHelpers.text indent "Building solution %s with \"dotnet build\"." (Path.GetFileName solutionFile)
             BuildInfo.captureBuild f solutionFile
         | SingleProject projectFile ->
             match BuildInfo.tryClosure projectFile with
@@ -369,7 +371,7 @@ type WatchHandler(initialState: (string * string []) list) =
     let killProject proj =
         match d.TryGetValue proj with
         | true, Some (proc: Process) ->
-            PrintHelpers.info 2 "Cancelling build for %s" proj
+            PrintHelpers.text 2 "Cancelling build for %s" proj
             proc.Kill()
         | _, _ -> ()
 
@@ -426,7 +428,7 @@ type WatchHandler(initialState: (string * string []) list) =
             if b.FullPath.EndsWith "fsx" && filesToWatch = [] then
                 mb.Post
                 <| fun _ ->
-                    PrintHelpers.info 0 "Compilation triggered by: %s" b.FullPath
+                    PrintHelpers.text 0 "Compilation triggered by: %s" b.FullPath
                     let _ = FileCompile.Compile 2 ([CompileArguments.FilePath b.FullPath] |> toParseResults)
                     ()
             // otherwise run standard dotnet compilation
@@ -440,7 +442,7 @@ type WatchHandler(initialState: (string * string []) list) =
                             this.ReloadProjectFile()
                             mb.Post
                             <| fun _ ->
-                                PrintHelpers.info 0 "Compilation triggered by: %s" b.FullPath
+                                PrintHelpers.text 0 "Compilation triggered by: %s" b.FullPath
                                 killProject project
                                 let _ = build 2 (updateDict project) ([BuildArguments.Project b.FullPath] |> toParseResults)
                                 ()
@@ -449,7 +451,7 @@ type WatchHandler(initialState: (string * string []) list) =
                             if files |> Array.map (fun x -> x.ToLower()) |> Array.contains (b.FullPath.ToLower()) then
                                 mb.Post
                                 <| fun _ ->
-                                    PrintHelpers.info 0 "Compilation triggered by: %s" b.FullPath
+                                    PrintHelpers.text 0 "Compilation triggered by: %s" b.FullPath
                                     killProject project
                                     let _ = build 2 (updateDict project) ([BuildArguments.Project project] |> toParseResults)
                                     ()
@@ -493,12 +495,66 @@ let checkCurrentFolderWithPattern (pattern: string option) =
 
 
 
+let private usageText =
+    """USAGE: dotnet ws <subcommand> [<options>]
+
+SUBCOMMANDS:
+
+    build [--project <PROJ>] [--time]
+        Build the WebSharper project (or solution) in the current or nearest
+        parent folder.
+          -p, --project <PROJ>   Project or solution (.sln/.slnx) file to build.
+          -t, --time             Print per-stage compilation timings.
+
+    compile [options] <FILE>
+        Compile an .fs/.fsx file to JavaScript or TypeScript using the Booster.
+          -v, --version <VER>    WebSharper version to compile against.
+          -o, --output <FILE>    Output file (implies BundleOnly mode).
+          -p, --path <PATH>      Output location (library mode).
+          -s, --standalone       Standalone compilation.
+          -ts, --typescript      Emit TypeScript.
+          -d, --debug            Debug compilation.
+          -w, --watch            Watch the file and recompile on change.
+              --force            Clear the temporary folder before compiling.
+
+    watch [--pattern <GLOB>]
+        Watch the current folder and rebuild or compile changed projects/files.
+          -p, --pattern <GLOB>   Only watch files matching this glob.
+
+    start --rid <RID> [--version <VER>]
+        Start the Booster service (wsfscservice).
+          -r, --rid <RID>        Runtime identifier: win-x64 | linux-x64 | linux-musl-x64.
+          -v, --version <VER>    Booster version (default: latest cached).
+
+    stop [--version <VER>] [--force] [--clear-cache]
+        Send a stop signal to running Booster service(s).
+          -v, --version <VER>    Only stop services with this version.
+          -f, --force            Kill the process(es) instead of signaling.
+              --clear-cache      Also clear the temporary ws-compile folder.
+
+    list
+        List running Booster versions and their source paths.
+
+    info
+        Print the version of the dotnet ws tool.
+
+EXAMPLES:
+
+    dotnet ws build
+    dotnet ws build --project ./App/App.fsproj
+    dotnet ws build --time
+    dotnet ws compile -v 10.1.8.682 Client.fs
+    dotnet ws watch --pattern '*.fs'
+    dotnet ws start -r linux-x64
+    dotnet ws stop --force
+    dotnet ws list"""
+
 [<EntryPoint>]
 let main argv =
     let v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
     let helpMessage =
         sprintf "WebSharper .NET CLI version %d.%d.%d" v.Major v.Minor v.Build
-    PrintHelpers.info 0 "%s" helpMessage
+    PrintHelpers.text 0 "%s" helpMessage
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet ws", checkStructure = true)
     try
         let result = parser.Parse argv
@@ -506,7 +562,7 @@ let main argv =
 
         match subCommand with
         | Info ->
-            PrintHelpers.info 0 "%d.%d.%d" v.Major v.Minor v.Build
+            PrintHelpers.text 0 "%d.%d.%d" v.Major v.Minor v.Build
             0
         | Watch watchParams ->
             let globPattern = watchParams.TryGetResult Pattern
@@ -524,7 +580,7 @@ let main argv =
                     0
                 | projects ->
                     projects
-                    |> List.iter (fun (proj, _) -> PrintHelpers.info 0 "Watching %s" proj)
+                    |> List.iter (fun (proj, _) -> PrintHelpers.text 0 "Watching %s" proj)
                     let watch = WatchHandler(projects)
                     watch.Initialize()
                     while true do
@@ -577,7 +633,7 @@ let main argv =
                         startInfo.Arguments <- "./websharper.log"
                         try
                             Process.Start(startInfo) |> ignore
-                            PrintHelpers.info 0 "version: %s; path: %s Started." version cmdFullPath
+                            PrintHelpers.text 0 "version: %s; path: %s Started." version cmdFullPath
                             0
                         with ex ->
                             PrintHelpers.error 0 "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
@@ -607,12 +663,12 @@ let main argv =
                     let killOrSend (x: Process) = 
                         if stopParams.Contains Force then
                             x.Kill()
-                            PrintHelpers.info 0 "Stopped %s with PID=%i" fd x.Id
+                            PrintHelpers.text 0 "Stopped %s with PID=%i" fd x.Id
                             (0, true)
                         else
                             let clientPipe = clientPipeForLocation x.MainModule.FileName
                             sendOneMessage clientPipe {args = [|"exit"|]}
-                            PrintHelpers.info 0 "Stop signal sent to %s with PID=%i" fd x.Id
+                            PrintHelpers.text 0 "Stop signal sent to %s with PID=%i" fd x.Id
                             (0, true)
                     match versionArg with
                     | Some v ->
@@ -638,7 +694,7 @@ let main argv =
                 match versionArg with
                 | Some v ->
                     if returnCode <> 0 then
-                        PrintHelpers.info 0 "Could not find running service with version: %s" v
+                        PrintHelpers.text 0 "Could not find running service with version: %s" v
                 | None -> ()
                 if successfulErrorPrint |> not then
                     PrintHelpers.error 0 "Couldn't read processes."
@@ -658,9 +714,9 @@ let main argv =
                         sprintf "version: %s; path: %s" versionToQueryBy proc.MainModule.FileName
                     )
                 if procInfos.Length = 0 then
-                    PrintHelpers.info 0 "There are no wsfscservices running."
+                    PrintHelpers.text 0 "There are no wsfscservices running."
                 else
-                    PrintHelpers.info 0 """The following wsfscservice versions are running:
+                    PrintHelpers.text 0 """The following wsfscservice versions are running:
 
   %s.""" 
                         (String.Join(sprintf "%s  " Environment.NewLine, procInfos))
@@ -674,5 +730,9 @@ let main argv =
         | Compile arguments -> FileCompile.CompileFile arguments
     with
     | :? Argu.ArguParseException as ex -> 
-        printfn "%s." ex.Message
-        1
+        if argv.Length = 0 || (argv |> Array.exists (fun a -> a = "--help" || a = "-h")) then
+            PrintHelpers.text 0 "%s" usageText
+            0
+        else
+            printfn "%s." ex.Message
+            1
