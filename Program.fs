@@ -112,39 +112,92 @@ and BuildArguments =
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Project _ -> "Specify the project file to build."
+            | Project _ -> "Specify the project or solution (.sln/.slnx) file to build. Defaults to a single project, or a solution, found in the current or a nearest parent folder."
+
+/// A resolved `dotnet ws build` target.
+type BuildTarget =
+    | SingleProject of string
+    | Solution of string
+    | NotFound
+    | Ambiguous
+
+let isSolutionFile (path: string) =
+    match Path.GetExtension(path).ToLowerInvariant() with
+    | ".sln" | ".slnx" -> true
+    | _ -> false
+
+// Resolves the build target from an optional --project argument.
+// With no argument, prefers a single *.fsproj in the current folder, then a
+// solution (.sln/.slnx), then walks up the parent folders. The search stops at
+// (and includes) the nearest folder containing a wsconfig.json.
+let resolveBuildTarget (explicitTarget: string option) =
+    match explicitTarget with
+    | Some target ->
+        if File.Exists target then
+            let full = Path.GetFullPath target
+            if isSolutionFile full then Solution full else SingleProject full
+        else
+            NotFound
+    | None ->
+        let rec find location =
+            let fsprojs = Directory.EnumerateFiles(location, "*.fsproj") |> Seq.toList
+            let solutions =
+                seq {
+                    yield! Directory.EnumerateFiles(location, "*.sln")
+                    yield! Directory.EnumerateFiles(location, "*.slnx")
+                }
+                |> Seq.sort
+                |> Seq.toList
+            match fsprojs, solutions with
+            | [ single ], _ ->
+                SingleProject (Path.GetFullPath single)
+            | (_ :: _ :: _), (sln :: _) ->
+                Solution (Path.GetFullPath sln)
+            | (_ :: _ :: _), [] ->
+                Ambiguous
+            | [], (sln :: _) ->
+                Solution (Path.GetFullPath sln)
+            | [], [] ->
+                // A wsconfig.json marks a WebSharper project root: do not
+                // search above it.
+                if File.Exists(Path.Combine(location, "wsconfig.json")) then
+                    NotFound
+                else
+                    let parent = Directory.GetParent location
+                    // parent of root will be null
+                    if isNull parent then NotFound
+                    else find parent.FullName
+        find "."
 
 let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>) =
     let projectArgument = buildParams.TryGetResult Project
     try
-        let projectFile = 
-            match projectArgument with
-            | Some project ->
-                if File.Exists project |> not then
-                    // will become "Couldn't find the project file."
-                    failwith "dummy"
-                project |> Some
-            | None -> 
-                let rec findFsproj location =
-                    let fsprojsInLocation =
-                        Directory.EnumerateFiles(location, "*.fsproj")
-                    match Seq.tryHead fsprojsInLocation with
-                    | Some _ ->
-                        Seq.exactlyOne fsprojsInLocation
-                        |> Path.GetFullPath
-                        |> Some
-                    | None -> 
-                        let parent = Directory.GetParent location
-                        // parent of root will be null
-                        if isNull parent then
-                            None
-                        else
-                            findFsproj parent.FullName
-                findFsproj "."
-                        
-        match projectFile with
-        | Some projectFile ->
+        let dotnetBuild (projectPath: string option) =
+            let startInfo = ProcessStartInfo("dotnet")
+            let arguments =
+                match projectPath with
+                | Some project -> sprintf "build \"%s\"" project
+                | None -> "build"
+            startInfo.Arguments <- arguments
+            let dotnetProc = Process.Start(startInfo)
+            f dotnetProc
+            dotnetProc.WaitForExit()
+            dotnetProc.ExitCode
+
+        match resolveBuildTarget projectArgument with
+        | NotFound ->
+            PrintHelpers.error indent "Couldn't find a project or solution file in the current directory."
+            1
+        | Ambiguous ->
+            PrintHelpers.error indent "Found more than one project file in the current directory. Specify one with \"--project\"."
+            1
+        | Solution solutionFile ->
+            Environment.CurrentDirectory <- Path.GetDirectoryName solutionFile
+            PrintHelpers.info indent "Building solution %s with \"dotnet build\"." (Path.GetFileName solutionFile)
+            dotnetBuild (Some solutionFile)
+        | SingleProject projectFile ->
             Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
+
             let sendCompile (proc: Process) =
                 try
                     let clientPipe = clientPipeForLocation proc.MainModule.FileName
@@ -190,19 +243,6 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                     sendCompile proc |> Some
                 | _ ->
                     None
-            let dotnetBuild() =
-                let startInfo = ProcessStartInfo("dotnet")
-                let arguments =
-                    match projectArgument with
-                    | Some project ->
-                        sprintf "build %s" project
-                    | None ->
-                        "build"
-                startInfo.Arguments <- arguments
-                let dotnetProc = Process.Start(startInfo)
-                f dotnetProc
-                dotnetProc.WaitForExit()
-                dotnetProc.ExitCode
             try
                 let nugetCachePath = Path.Combine("obj", "project.nuget.cache")
                 let nugetCache = File.ReadAllText(nugetCachePath)
@@ -214,41 +254,38 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
                     // wsfscservice process reported back, it doesn't have the project cached
                     | Error ErrorCode.ProjectNotCached -> 
                         PrintHelpers.info indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
-                        dotnetBuild()
+                        dotnetBuild (Some projectFile)
                     // the type of the project is not ws buildable (WIG or Proxy)
                     | Error ErrorCode.ProjectTypeNotPermitted -> 
                         PrintHelpers.info indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
-                        dotnetBuild()
+                        dotnetBuild (Some projectFile)
                     // cache of the project is outdated
                     | Error ErrorCode.ProjectOutdated ->
                         PrintHelpers.info indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
-                        dotnetBuild()
+                        dotnetBuild (Some projectFile)
                     | Some errorCode -> errorCode
                     | None ->
                         PrintHelpers.info indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
-                        dotnetBuild()
+                        dotnetBuild (Some projectFile)
                 else
                     PrintHelpers.info indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
-                    dotnetBuild()
+                    dotnetBuild (Some projectFile)
             with
             | :? UnauthorizedAccessException | :? Security.SecurityException -> 
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
-                dotnetBuild()
+                dotnetBuild (Some projectFile)
             | :? FileNotFoundException | :? DirectoryNotFoundException ->
                 PrintHelpers.info indent """Cache file for restored nuget packages is not found (first build or after a clean). Fallback to "dotnet build"."""
-                dotnetBuild()
+                dotnetBuild (Some projectFile)
             | :? IOException ->
                 PrintHelpers.info indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
-                dotnetBuild()
+                dotnetBuild (Some projectFile)
             | x ->
                 PrintHelpers.info indent """Couldn't build project because: %s
 
 Fallback to "dotnet build".
 """                         x.Message
-                dotnetBuild()
-        | None ->
-            PrintHelpers.error indent "Couldn't find a project file in the current directory."
-            1
+                dotnetBuild (Some projectFile)
     with
     | :? UnauthorizedAccessException | :? Security.SecurityException -> 
         PrintHelpers.error indent "Couldn't search for a project file (Unauthorized)"
