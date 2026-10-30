@@ -100,6 +100,21 @@ that, trigger the workflow from the Actions UI and create the release manually.
   change) it runs a capture build of the project, which also rebuilds and
   re-captures its dependencies.
 
+### Target resolution
+`resolveBuildTarget` picks, in order: `--project` (project *or* solution); else a
+single `*.fsproj` in the current folder; else a `.sln`/`.slnx` in the current
+folder; else the nearest parent with one of those. The upward search **stops at
+(and includes) the nearest `wsconfig.json`** (a WebSharper project root), so it
+can't pick up an unrelated ancestor project. A folder with more than one
+`.fsproj` and no solution is ambiguous ("Found more than one project file…").
+Paths are made absolute before use, so a bare `--project Foo.fsproj` and a
+relative `--project A/A.fsproj` both work.
+
+### Output
+When the fast path runs, only the service's `Total compilation time` line is
+printed by default; the rest of its stdout (`n:`) is shown only with `--time`
+(see `tryBuildProjectService`). Errors (`e:`) always print.
+
 ### The capture mechanism (`BuildInfo.fs`)
 The capture build injects `-p:CustomAfterMicrosoftCommonTargets=<ws-capture.targets>`
 and `-p:WsCaptureBuildInfo=true`. That targets file is imported into every
@@ -111,7 +126,10 @@ and computed items are already resolved — no project/solution parsing.
 Freshness is a structural fingerprint: the project file, its
 `Directory.Build.*`/`Directory.Packages.props` chain, `project.assets.json` and
 the generated NuGet props/targets. Source (`.fs`) edits do **not** invalidate a
-manifest.
+manifest. `MSBuildAllProjects` is deliberately *not* used — it is incomplete (it
+omits the project file and `Microsoft.Common.props/targets`). Also note MSBuild
+drops an item whose `Include` references an *undefined* property, so the capture
+target joins lists through properties rather than inline item lists.
 
 The per-project fast path (`BuildHelpers.buildThroughBooster`, also used by
 `compile`): read `obj/project.nuget.cache` for the `WebSharper.FSharp` version,
@@ -120,10 +138,36 @@ try each running booster of that version (`Boosters.running`), send
 `ProjectNotCached` is skipped (the portable and the Booster tool boosters of one
 version can both run); on any other failure fall back to `dotnet build "<project>"`.
 
+## How `dotnet ws compile` works
+
+`compile` (in `FileCompile.fs`) builds a *generated* project for an `.fs`/`.fsx`
+file:
+- `projectFileSetup` writes `MyProject.fsproj` (targeting `netstandard2.0`) under
+  `%LOCALAPPDATA%/ws-compile/<sha256(deps|extension)>/` (macOS:
+  `~/Library/Application Support/ws-compile/…`) and adds `WebSharper.FSharp` plus
+  any `#r "nuget:…"` deps (`parseDependencies`).
+- The cache folder is keyed by the **dependency set + file extension**, so two
+  `.fs` files with the same deps share one project (and its restore).
+  `File.<ext>` and `wsconfig.json` are rewritten every run; the project file and
+  its `PackageReference`s are created once.
+- `-s`/`--standalone` skips the cache (builds in the source's own directory);
+  `--force` clears the cache folder first.
+
+Known gap: the reuse path doesn't verify/repair the project's `PackageReference`s,
+so a project created incompletely (e.g. a failed `dotnet add`) stays broken —
+`--force` (or deleting the cache folder) recovers it. A self-heal is planned.
+
 ## Key concepts
 
 - **Booster / `wsfscservice`**: a long-running, per-WebSharper.FSharp-version F#
   compile service. One instance serves all compilations under a folder.
+- **Booster cache**: the service keeps a per-*project-path* entry (`argsDict`)
+  holding the compiler args it was last invoked with plus dependency timestamps.
+  `compile:<project>` replays those args; if a recorded dependency changed it
+  answers `ProjectOutdated` (→ the tool falls back to `dotnet build`), and if the
+  project was never built through the service it answers `ProjectNotCached`.
+  Extra global properties on a capture build don't change the key, so they don't
+  poison the cache.
 - **Where boosters run from** (WebSharper 11+): the `WebSharper.FSharp.Booster`
   RID-specific .NET tool (ReadyToRun, `wsfscservice` apphost) when the build
   finds it at exactly `WebSharperCompilerVersion` (tool manifest from the project
@@ -195,10 +239,30 @@ version can both run); on any other failure fall back to `dotnet build "<project
   terminal default color), `info` (optional/diagnostic — e.g. `--time` stage
   timings), `error`/`warning` (red/yellow). Keep fallback messages uniform:
   `"<reason>. Fallback to \"dotnet build\"."`
-- Shell out with `ProcessStartInfo("dotnet")`; always restore
-  `Environment.CurrentDirectory` in a `finally`.
+- Shell out with `ProcessStartInfo("dotnet")`; **quote project/path arguments**
+  (they can contain spaces — e.g. macOS's `…/Application Support/ws-compile/…`),
+  and always restore `Environment.CurrentDirectory` in a `finally`.
 - Error codes are negative magic numbers in `BuildHelpers.ErrorCode` /
   `OutputErrorCode`; they must match what the service emits.
+- The no-args / `--help` screen is the `usageText` constant in `Program.fs`
+  (shown whenever `argv` is empty or contains `--help`/`-h`). Keep it in sync with
+  the Argu `IArgParserTemplate.Usage` strings and the README.
+
+## Verifying changes
+
+No test suite — verify against a real WebSharper project (ideally one with a
+`ProjectReference`, run from inside the dependent project). Quick loop:
+- `dotnet ws build` (cold) → capture build; writes `obj/wsbuild.info` (one per
+  project in the closure); inspect it for `project` / `refs` / `fingerprint`.
+- `dotnet ws build` again (warm) → the fast path; expect the service's
+  `Total compilation time` and **no** `Fallback to "dotnet build"` lines.
+- `dotnet ws build --time` → the full per-stage timing list.
+- `touch *.fsproj` → recapture; `touch *.fs` → stays on the fast path.
+- Watch stdout for `Fallback to "dotnet build"` to see when the fast path didn't
+  apply.
+
+The built dll can be driven without installing:
+`dotnet bin/Release/net8.0/dotnet-ws.dll build`.
 
 ## Known limitations / open problems
 
