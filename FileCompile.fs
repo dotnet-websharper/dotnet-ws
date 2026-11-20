@@ -95,151 +95,111 @@ module BuildHelpers =
         dotnetProc.WaitForExit()
         dotnetProc.ExitCode
 
-    let versionPattern = @"(\d+\.\d+\.\d+\.\d+[\w\d-]*)"
-
-    /// Best-effort extraction of the WebSharper.FSharp version of a running
-    /// wsfscservice process. On Windows the version is read from the embedded
-    /// file version info; on Unix (macOS/Linux) there is no version resource,
-    /// so it is parsed from the executable path instead, which has the form
-    /// .../websharper.fsharp/<version>/tools/<tfm>/<rid>/wsfscservice.
-    let tryGetProcessVersion (proc: Process) =
-        let fileInfo = proc.MainModule.FileVersionInfo
-        [ fileInfo.FileDescription; fileInfo.FileVersion; proc.MainModule.FileName ]
-        |> List.tryPick (fun source ->
-            if String.IsNullOrWhiteSpace source then
-                None
-            else
-                let m = Regex.Match(source, versionPattern, RegexOptions.Singleline)
-                if m.Success then Some m.Value else None)
-
-    let clientPipeForLocation (location:string) =
-        let location = IO.Path.GetDirectoryName(location)
-        let pipeNameRaw = (location, "WsFscServicePipe") |> System.IO.Path.Combine |> hashPath
-        let pipeName =
-            if RuntimeInformation.IsOSPlatform(OSPlatform.Windows) then
-                pipeNameRaw  // Windows uses simple pipe names
-            else
-                Path.Combine(Path.GetTempPath(), pipeNameRaw) // Linux/macOS require 
-        let serverName = "." // local machine server name
-        new NamedPipeClientStream( serverName, //server name, local machine is .
-                             pipeName, // name of the pipe,
-                             PipeDirection.InOut, // direction of the pipe 
-                             PipeOptions.WriteThrough // the operation will not return the control until the write is completed
-                             ||| PipeOptions.Asynchronous)
-    
-    let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
-        let options = Json.JsonSerializerOptions()
-        options.Encoder <- Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        let res = Json.JsonSerializer.Serialize(message, options)
-        let bytes = Encoding.UTF8.GetBytes res
-        clientPipe.Connect(2000)
-        if clientPipe.IsConnected then
-            clientPipe.ReadMode <- PipeTransmissionMode.Byte
-            clientPipe.Write(System.BitConverter.GetBytes(bytes.Length), 0, 4) // prepend with message length
-            clientPipe.Write(bytes, 0, bytes.Length)
-            clientPipe.Flush()
-            if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
-                clientPipe.WaitForPipeDrain()
-        else
-            failwith "Pipe is not initialized yet"
-    
-    let buildProjectFile indent (projectFile: string) (isDebug: bool) =
-        let currentPath = Environment.CurrentDirectory
+    /// Sends compile:<project> to a running booster, and prints its output. None when the booster
+    /// answers that it has not compiled this project yet, so another booster of the version can be tried.
+    let private sendCompile indent (printOut: string -> unit) (projectFile: string) (booster: Boosters.RunningBooster) =
         try
-            try                
-                Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
-                let sendCompile (proc: Process) =
-                    try
-                        let clientPipe = clientPipeForLocation proc.MainModule.FileName
-                        sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
-                        let write = async {
-                            let printResponse (message: obj) = 
-                                async {
-                                    // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
-                                    let jE = message :?> Json.JsonElement
-                                    match jE.GetString() with
-                                    | StdOut n ->
-                                        PrintHelpers.text indent "%s" n
-                                        return None
-                                    | StdErr e ->
-                                        PrintHelpers.error indent "%s" e
-                                        return None
-                                    | Finish i -> 
-                                        return i |> Some
-                                    | x ->
-                                        PrintHelpers.error indent "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
-                                        return Some (int OutputErrorCode.UnrecognizedMessage)
-                                }
-                            let! errorCode = readingMessages clientPipe printResponse (ignore)
-                            match errorCode with
-                            | Some x -> return x
-                            | None -> 
-                                PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
-                                return (int ErrorCode.UnexpectedFinish)
-                            }
-                        try
-                            Async.RunSynchronously(write)
-                        with
-                        | _ -> 
-                            PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
-                            (int ErrorCode.UnexpectedFinish)
-                    with
-                    | x -> 
-                        PrintHelpers.error indent "Couldn't send compile message to the build server: %s." x.Message
-                        (int ErrorCode.UnexpectedFinish)
-                let tryCheckVersion (proc: Process) (version: string) =
-                    match tryGetProcessVersion proc with
-                    | Some serviceVersion when version.StartsWith serviceVersion ->
-                        sendCompile proc |> Some
-                    | _ ->
-                        None
-                let dotnetBuild () =
-                    dotnetBuild projectFile isDebug
-                try
-                    let nugetCachePath = Path.Combine("obj", "project.nuget.cache")
-                    let nugetCache = File.ReadAllText(nugetCachePath)
-                    let regex = new Regex("websharper\.fsharp\.(.+)\.nupkg\.sha512")
-                    let m = regex.Match(nugetCache)
-                    if m.Success then
-                        let version = m.Groups.[1].Value
-                        match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
-                        // wsfscservice process reported back, it doesn't have the project cached
-                        | Error ErrorCode.ProjectNotCached -> 
-                            PrintHelpers.text indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
-                            dotnetBuild () 
+            use clientPipe = Boosters.clientPipe booster.Folder
+            Boosters.sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
+            let write = async {
+                let printResponse (message: obj) =
+                    async {
+                        // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
+                        let jE = message :?> Json.JsonElement
+                        match jE.GetString() with
+                        | StdOut n ->
+                            printOut n
+                            return None
+                        | StdErr e ->
+                            PrintHelpers.error indent "%s" e
+                            return None
+                        | Finish i ->
+                            return i |> Some
+                        | x ->
+                            PrintHelpers.error indent "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
+                            return Some (int OutputErrorCode.UnrecognizedMessage)
+                    }
+                let! errorCode = readingMessages clientPipe printResponse ignore
+                match errorCode with
+                | Some x -> return x
+                | None ->
+                    PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                    return (int ErrorCode.UnexpectedFinish)
+                }
+            try
+                Async.RunSynchronously(write)
+            with
+            | _ ->
+                PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
+                (int ErrorCode.UnexpectedFinish)
+        with
+        | x ->
+            PrintHelpers.error indent "Couldn't send compile message to the build server: %s." x.Message
+            (int ErrorCode.UnexpectedFinish)
+
+    /// The fast path of dotnet ws build and compile: compiles a project with a running booster of its
+    /// WebSharper.FSharp version that has compiled it before, otherwise runs dotnetBuild.
+    /// The current directory must be the project's folder.
+    let buildThroughBooster indent (printOut: string -> unit) (projectFile: string) (dotnetBuild: unit -> int) =
+        try
+            match Boosters.tryProjectPackageVersion "websharper.fsharp" (Path.GetDirectoryName projectFile) with
+            | None when not (File.Exists(Path.Combine("obj", "project.nuget.cache"))) ->
+                PrintHelpers.text indent "Cache file for restored nuget packages is not found (first build or after a clean). Fallback to \"dotnet build\"."
+                dotnetBuild ()
+            | None ->
+                PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
+                dotnetBuild ()
+            | Some version ->
+                let candidates = Boosters.running () |> List.filter (Boosters.matchesVersion version)
+                // the boosters of the portable compiler and of the Booster tool can run side by side:
+                // try each until one has this project cached
+                let rec tryNext notCached (boosters: Boosters.RunningBooster list) =
+                    match boosters with
+                    | [] when notCached ->
+                        PrintHelpers.text indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
+                        dotnetBuild ()
+                    | [] ->
+                        PrintHelpers.text indent "No running booster found with the version %s. Fallback to \"dotnet build\"." version
+                        dotnetBuild ()
+                    | b :: rest ->
+                        match Some (sendCompile indent printOut projectFile b) with
+                        // the booster reported back, it doesn't have the project cached
+                        | Error ErrorCode.ProjectNotCached ->
+                            tryNext true rest
                         // the type of the project is not ws buildable (WIG or Proxy)
-                        | Error ErrorCode.ProjectTypeNotPermitted -> 
+                        | Error ErrorCode.ProjectTypeNotPermitted ->
                             PrintHelpers.text indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
-                            dotnetBuild()
+                            dotnetBuild ()
                         // cache of the project is outdated
                         | Error ErrorCode.ProjectOutdated ->
                             PrintHelpers.text indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
-                            dotnetBuild()
-                        | Some errorCode ->
-                            printfn "%i" errorCode
-                            errorCode
-                        | None ->
-                            PrintHelpers.text indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
-                            dotnetBuild()
-                    else
-                        PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
-                        dotnetBuild()
-                with
-                | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-                    PrintHelpers.text indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
-                    dotnetBuild()
-                | :? FileNotFoundException | :? DirectoryNotFoundException ->
-                    PrintHelpers.text indent "Cache file for restored nuget packages is not found (first build or after a clean). Fallback to \"dotnet build\"."
-                    dotnetBuild()
-                | :? IOException ->
-                    PrintHelpers.text indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
-                    dotnetBuild()
-                | x ->
-                    PrintHelpers.text indent """Couldn't build project because: %s
-    
-        Fallback to "dotnet build".
-        """                         x.Message
-                    dotnetBuild()
+                            dotnetBuild ()
+                        | Some errorCode -> errorCode
+                        | None -> tryNext notCached rest
+                try
+                    tryNext false candidates
+                finally
+                    candidates |> List.iter (fun b -> b.Process.Dispose())
+        with
+        | :? UnauthorizedAccessException | :? Security.SecurityException ->
+            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
+            dotnetBuild ()
+        | :? IOException ->
+            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
+            dotnetBuild ()
+        | x ->
+            PrintHelpers.text indent """Couldn't build project because: %s
+
+Fallback to "dotnet build".
+"""             x.Message
+            dotnetBuild ()
+
+    let buildProjectFile indent (projectFile: string) (isDebug: bool) =
+        let currentPath = Environment.CurrentDirectory
+        try
+            try
+                Environment.CurrentDirectory <- Path.GetDirectoryName projectFile
+                buildThroughBooster indent (PrintHelpers.text indent "%s") projectFile (fun () -> dotnetBuild projectFile isDebug)
             with
             | :? UnauthorizedAccessException | :? Security.SecurityException -> 
                 PrintHelpers.error indent "Couldn't search for a project file (Unauthorized)"

@@ -7,7 +7,7 @@ compilation.
 
 - An F# .NET tool (`PackAsTool`, `ToolCommandName=dotnet-ws`, invoked as `dotnet ws`).
 - Subcommands (parsed with Argu in `Program.fs`): `build`, `compile`, `watch`,
-  `start`, `stop`, `list`, `info`.
+  `start`, `stop`, `list`, `compiler status`, `compiler sync`, `info`.
 - Purpose: fast WebSharper compilation through the long-running Booster service
   (`wsfscservice`), with `dotnet build` as the fallback; plus one-file
   compilation (`compile`) and a file watcher (`watch`).
@@ -74,10 +74,12 @@ that, trigger the workflow from the Actions UI and create the release manually.
 
 | Path | What it is |
 | --- | --- |
-| `Program.fs` | Entry point; Argu CLI types; `build`/`start`/`stop`/`list`/`watch`; process + service discovery; the watch handlers |
-| `FileCompile.fs` | `BuildHelpers` (build/fallback, pipe client, version discovery, `buildProjectFile` fast path); one-file `compile`; `projectFileSetup` |
+| `Program.fs` | Entry point; Argu CLI types; `build`/`start`/`stop`/`list`/`watch`/`compiler`; the watch handlers |
+| `Boosters.fs` | Booster discovery (records + legacy processes), pipe client, start/stop/kill, the Booster tool lookup (port of core's `BoosterLocator.cs`), package folders |
+| `FileCompile.fs` | `BuildHelpers` (output, `buildThroughBooster` fast path shared by `build` and `compile`, `buildProjectFile`); one-file `compile`; `projectFileSetup` |
+| `CompilerCommand.fs` | `compiler status` / `compiler sync` (WebSharper 11+): project properties via `dotnet msbuild -getProperty`, the compiler the task would pick, `dotnet tool` install/update |
 | `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.info` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
-| `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`) — must stay in sync with `core/src/compiler/WebSharper.FSharp.Service` |
+| `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`, `boosterPipeName`) and `BoosterRecord` — must stay in sync with `core/src/compiler/WebSharper.Compiler/WsFscServiceCommon.fs` |
 | `dotnet-ws.sln`, `dotnet-ws.fsproj`, `WebSharper.Compiler/…` | Solution and projects |
 | `build.cmd`, `.github/workflows/release.yml` | Packaging and release (manual `workflow_dispatch`, NuGet trusted publishing) |
 | `.config/dotnet-tools.json` | Stale placeholder (`1.0.0`) — do not rely on it for the real version |
@@ -109,32 +111,54 @@ Freshness is a structural fingerprint: the project file, its
 the generated NuGet props/targets. Source (`.fs`) edits do **not** invalidate a
 manifest.
 
-The per-project fast path (`tryBuildProjectService`) is the original one:
-read `obj/project.nuget.cache` for the `WebSharper.FSharp` version, find a
-matching running `wsfscservice`, send `compile:<project>` and stream `n:` / `e:`
-/ `x:`; on any failure fall back to `dotnet build "<project>"`.
+The per-project fast path (`BuildHelpers.buildThroughBooster`, also used by
+`compile`): read `obj/project.nuget.cache` for the `WebSharper.FSharp` version,
+try each running booster of that version (`Boosters.running`), send
+`compile:<project>` and stream `n:` / `e:` / `x:`. A booster answering
+`ProjectNotCached` is skipped (the portable and the Booster tool boosters of one
+version can both run); on any other failure fall back to `dotnet build "<project>"`.
 
 ## Key concepts
 
 - **Booster / `wsfscservice`**: a long-running, per-WebSharper.FSharp-version F#
   compile service. One instance serves all compilations under a folder.
-- **Pipe name**: `Path.Combine(Path.GetDirectoryName(serviceExe), "WsFscServicePipe")`
+- **Where boosters run from** (WebSharper 11+): the `WebSharper.FSharp.Booster`
+  RID-specific .NET tool (ReadyToRun, `wsfscservice` apphost) when the build
+  finds it at exactly `WebSharperCompilerVersion` (tool manifest from the project
+  up, else global), otherwise the package's portable `tools/net11.0`, run as
+  `dotnet wsfscservice.dll` — a process named `dotnet`. WebSharper 10 and earlier
+  (and 11 previews before 11.0.0-preview.2) ship per-platform apphosts in
+  `tools/<tfm>/<rid>/` of the package.
+- **Booster records** (WebSharper 11+): each booster writes a `BoosterRecord`
+  (pid, version, folder, UTC start time, pipe) to
+  `<temp>/websharper-boosters/<hash of folder>.json` and removes it on exit.
+  `Boosters.registered` reads them, checks pid + start time, and deletes stale
+  ones (killed boosters). Older boosters have no record and are found by the
+  process name `wsfscservice` (`Boosters.running` returns both).
+- **Pipe name**: `Path.Combine(<booster folder>, "WsFscServicePipe")`
   → `hashPath` (lowercased, UTF-8, MD5 hex). On Unix it is prefixed with the
-  temp dir. The tool derives it from the running process's
-  `MainModule.FileName`; the service derives it from its entry-assembly
-  location. Both use `WsFscServiceCommon.hashPath` — **do not change it without
-  changing `core`**.
+  temp dir (`boosterPipeName`). The tool derives it from the booster's folder;
+  the service from its entry-assembly location. Both use
+  `WsFscServiceCommon.hashPath` — **do not change it without changing `core`**.
+- **Probing a pipe**: don't connect and disconnect just to check a booster is
+  there, the service keeps reading a closed connection. `start` waits for the
+  record instead.
 - **Message protocol**: JSON `{ args: string[] }`, 4-byte little-endian length
   prefix. Server replies are strings prefixed `n: `, `e: `, `x: <int>`.
-- **Version discovery** (`BuildHelpers.tryGetProcessVersion`): on Windows the
+- **Version discovery of legacy boosters** (`Boosters.tryGetProcessVersion`): on Windows the
   version comes from embedded file version info; on macOS/Linux
   `FileVersionInfo` is `null`, so it is parsed from the executable path
   (`…/websharper.fsharp/<version>/tools/<tfm>/<rid>/wsfscservice`). Guard
   against null there.
-- **`dotnetBinaryFolder`** (`Program.fs`): ordered TFM list used by
-  `dotnet ws start` to locate the packaged service under the WebSharper.FSharp
-  package's `tools/<tfm>/<rid>/`. Add a new TFM here when WebSharper.FSharp
-  starts shipping it.
+- **`Boosters.legacyTfms`**: ordered TFM list used by `dotnet ws start` to
+  locate per-platform boosters under the WebSharper.FSharp package's
+  `tools/<tfm>/<rid>/` (WebSharper 10 and earlier). WebSharper 11+ starts from
+  the Booster tool or `tools/net11.0/wsfscservice.dll` instead.
+- **Booster tool lookup** (`Boosters.locateTool`): a port of core's
+  `src/compiler/WebSharper.MSBuild.FSharp/BoosterLocator.cs` — keep the two in
+  sync. `compiler status` mirrors the task's order: explicit
+  `WebSharperToolPath`, `WebSharperUseBoosterTool=false`, manifest (WSB9101 /
+  WSB9102), global, portable.
 
 ## Conventions
 
@@ -169,5 +193,6 @@ matching running `wsfscservice`, send `compile:<project>` and stream `n:` / `e:`
 - A directory with multiple `.fsproj` files and no solution reports *"Found more
   than one project file…"*.
 - `.config/dotnet-tools.json` pins a long-obsolete version.
-- `dotnetBinaryFolder` is a hand-maintained list that must keep pace with the
-  TFMs shipped by WebSharper.FSharp.
+- `compiler sync` runs `dotnet tool` from a temp folder so a repository's
+  `global.json` can't pick an SDK older than 10 (RID-specific tools need SDK
+  10+); it passes the project's nearest `NuGet.Config` with `--configfile`.
