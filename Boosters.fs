@@ -74,18 +74,25 @@ let private sameStart (proc: Process) (started: DateTime) =
     with _ -> true
 
 /// The boosters registered in the record folder. Records of processes that are gone (killed
-/// boosters can't remove their record) are deleted.
+/// boosters can't remove their record) are deleted, and so are records that can't be read: boosters
+/// write them to a temporary file and rename it, so a record that doesn't parse is not one being written.
 let registered () =
     let dir = boosterRecordFolder ()
     if not (Directory.Exists dir) then [] else
     Directory.GetFiles(dir, "*.json")
     |> Array.choose (fun path ->
         let record =
-            try JsonSerializer.Deserialize<BoosterRecord>(File.ReadAllText path) |> Option.ofObj
-            with _ -> None
+            try Ok (JsonSerializer.Deserialize<BoosterRecord>(File.ReadAllText path) |> Option.ofObj)
+            with
+            | :? JsonException -> Ok None
+            // a record removed meanwhile, or not readable now: leave it
+            | _ -> Error ()
         match record with
-        | None -> None
-        | Some r ->
+        | Error () -> None
+        | Ok None ->
+            try File.Delete path with _ -> ()
+            None
+        | Ok (Some r) ->
             match tryGetProcess r.Pid with
             | Some p when sameStart p r.Started ->
                 Some { Kind = Registered; Pid = r.Pid; Version = Some r.Version; Folder = r.Folder; Process = p }
