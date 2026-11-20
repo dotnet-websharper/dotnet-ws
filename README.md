@@ -8,7 +8,9 @@ dotnet tool install -g dotnet-ws
 
 # Usage
 
-Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `compiler status`, `compiler sync`, `info`), their options, and examples.
+Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `stats`, `compiler status`, `compiler sync`, `info`), their options, and examples.
+
+`dotnet ws stats` shows the statistics the WebSharper 11 boosters keep on this machine: how long messages, compilation stages and agent tools take, and what agents ask. `--json` prints them as JSON.
 
 ## WebSharper 11 compilers and boosters
 

@@ -66,6 +66,7 @@ type Argument =
     | [<CliPrefix(CliPrefix.None)>] Stop of ParseResults<StopArguments>
     | [<CliPrefix(CliPrefix.None); SubCommand>] Info
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
+    | [<CliPrefix(CliPrefix.None)>] Stats of ParseResults<StatsArguments>
     | [<CliPrefix(CliPrefix.None)>] Compile of ParseResults<CompileArguments>
     | [<CliPrefix(CliPrefix.None)>] Watch of ParseResults<WatchArguments>
     | [<CliPrefix(CliPrefix.None)>] Compiler of ParseResults<CompilerCommand.CompilerArguments>
@@ -77,6 +78,7 @@ type Argument =
             | Start _ -> "Start the Booster service (wsfscservice) of the given version: the one of the WebSharper.FSharp.Booster tool if installed, otherwise the one of the WebSharper.FSharp package. If no version is given, the version of the project in the current folder, or the latest in the local NuGet cache, is used."
             | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
             | List -> "List running Booster versions and their source paths."
+            | Stats _ -> "Show the statistics of the boosters: how long messages, compilation stages and agent tools take (WebSharper 11+)."
             | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
             | Compile _ -> "Compile a given fs(x) file to JavaScript or TypeScript utilizing WebSharper's Booster if enabled"
             | Info -> "Prints the version of the dotnet ws tool"
@@ -113,6 +115,16 @@ and StopArguments =
             | Version _ -> "Specify the version of the Booster service."
             | Force -> "Force the specified operation (used for the stop subcommand)."
             | ``Clear-Cache`` -> "Clear local temp folder data."
+
+and StatsArguments =
+    | [<AltCommandLine("-v")>] Version of semver:string
+    | Json
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Version _ -> "Only the boosters of this version."
+            | Json -> "Print the statistics as JSON."
 
 and BuildArguments =
     | [<AltCommandLine("-p")>] Project of string
@@ -561,6 +573,14 @@ SUBCOMMANDS:
     list
         List running Booster versions and their source paths.
 
+    stats [--version <VER>] [--json]
+        Show the statistics of the boosters (WebSharper 11+): how long each
+        message, compilation stage and agent tool takes, and what agents ask.
+        From running boosters, else from what stopped ones saved. They stay
+        on this machine.
+          -v, --version <VER>    Only the boosters of this version.
+              --json             Print them as JSON.
+
     compiler status [--project <PROJ>]
         Show which WebSharper compiler each project builds with (the Booster
         tool or the portable compiler), and the running boosters.
@@ -637,6 +657,8 @@ let main argv =
             start startParams
         | Stop stopParams ->
             stop stopParams
+        | Stats statsParams ->
+            StatsCommand.run (statsParams.TryGetResult StatsArguments.Version) (statsParams.Contains StatsArguments.Json)
         | List ->
             try
                 CompilerCommand.printRunning (Boosters.running ())
