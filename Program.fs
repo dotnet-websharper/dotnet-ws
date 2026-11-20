@@ -49,10 +49,16 @@ let foldersToExclude =
         "output"
     ]
 
+/// Platforms of the per-platform boosters in WebSharper 10 and earlier packages.
 type RidEnum =
     | ``win-x64`` = 1
     | ``linux-x64`` = 2
     | ``linux-musl-x64`` = 3
+    | ``win-arm64`` = 4
+    | ``linux-arm64`` = 5
+    | ``linux-musl-arm64`` = 6
+    | ``osx-x64`` = 7
+    | ``osx-arm64`` = 8
 
 type Argument =
     | [<CliPrefix(CliPrefix.None)>] Build of ParseResults<BuildArguments>
@@ -62,11 +68,13 @@ type Argument =
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
     | [<CliPrefix(CliPrefix.None)>] Compile of ParseResults<CompileArguments>
     | [<CliPrefix(CliPrefix.None)>] Watch of ParseResults<WatchArguments>
+    | [<CliPrefix(CliPrefix.None)>] Compiler of ParseResults<CompilerCommand.CompilerArguments>
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Start _ -> "Start the Booster service (wsfscservice) with the given RID and version. If no value is given for version, the latest (as found in the local NuGet cache) will be used."
+            | Compiler _ -> "Show which WebSharper compiler the projects use, or install the matching Booster tools (WebSharper 11+)."
+            | Start _ -> "Start the Booster service (wsfscservice) of the given version: the one of the WebSharper.FSharp.Booster tool if installed, otherwise the one of the WebSharper.FSharp package. If no version is given, the version of the project in the current folder, or the latest in the local NuGet cache, is used."
             | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
             | List -> "List running Booster versions and their source paths."
             | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
@@ -85,13 +93,13 @@ and WatchArguments =
             // | Verbosity -> "Specifies a filtering pattern for the watch statement."
 
 and StartArguments =
-    | [<Mandatory; AltCommandLine("-r")>] RID of RidEnum
+    | [<AltCommandLine("-r")>] RID of RidEnum
     | [<AltCommandLine("-v")>] Version of semver:string
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | RID _ -> "Specify the Runtime Identifier (win-x64|linux-x64|linux-musl-x64) to use."
+            | RID _ -> "WebSharper 10 and earlier only: the Runtime Identifier of the booster in the package. Defaults to the current platform."
             | Version _ -> "Specify the version of the Booster service."
 
 and StopArguments =
@@ -187,99 +195,13 @@ let private tryBuildProjectService indent (f: Process -> unit) (verbose: bool) (
         dotnetProc.ExitCode
     try
         Environment.CurrentDirectory <- projectDir
-        let sendCompile (proc: Process) =
-            try
-                let clientPipe = clientPipeForLocation proc.MainModule.FileName
-                sendOneMessage clientPipe {args = [| sprintf "compile:%s" projectFile |]}
-                let write = async {
-                    let printResponse (message: obj) = 
-                        async {
-                            // messages on the service have n: e: or x: prefix for stdout stderr or error code kind of output
-                            let jE = message :?> System.Text.Json.JsonElement
-                            match jE.GetString()  with
-                            | StdOut n ->
-                                // --time prints the build service's per-stage output as
-                                // info; otherwise only the total, as normal text.
-                                if verbose then
-                                    PrintHelpers.info indent "%s" n
-                                elif n.Contains "Total compilation time" then
-                                    PrintHelpers.text indent "%s" n
-                                return None
-                            | StdErr e ->
-                                PrintHelpers.error indent "%s" e
-                                return None
-                            | Finish i -> 
-                                return i |> Some
-                            | x ->
-                                PrintHelpers.error indent "Unrecognizable message from server (%i): %s." (int OutputErrorCode.UnrecognizedMessage) x
-                                return Some (int OutputErrorCode.UnrecognizedMessage)
-                        }
-                    let! errorCode = readingMessages clientPipe printResponse ignore
-                    match errorCode with
-                    | Some x -> return x
-                    | None -> 
-                        PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
-                        return (int ErrorCode.UnexpectedFinish)
-                    }
-                try
-                    Async.RunSynchronously(write)
-                with
-                | _ -> 
-                    PrintHelpers.error indent "Listening for server finished abruptly (%i)" (int ErrorCode.UnexpectedFinish)
-                    (int ErrorCode.UnexpectedFinish)
-            with
-            | x -> 
-                PrintHelpers.error indent "Couldn't send compile message to the build server: %s." x.Message
-                (int ErrorCode.UnexpectedFinish)
-        let tryCheckVersion (proc: Process) (version: string) =
-            match tryGetProcessVersion proc with
-            | Some serviceVersion when version.StartsWith serviceVersion ->
-                sendCompile proc |> Some
-            | _ ->
-                None
-        try
-            let nugetCachePath = Path.Combine("obj", "project.nuget.cache")
-            let nugetCache = File.ReadAllText(nugetCachePath)
-            let regex = new Regex("websharper\.fsharp\.(.+)\.nupkg\.sha512")
-            let m = regex.Match(nugetCache)
-            if m.Success then
-                let version = m.Groups.[1].Value
-                match Process.GetProcessesByName("wsfscservice") |> Array.tryPick (fun x -> tryCheckVersion x version) with
-                // wsfscservice process reported back, it doesn't have the project cached
-                | Error ErrorCode.ProjectNotCached -> 
-                    PrintHelpers.text indent "Build service didn't cache the result of the build. Fallback to \"dotnet build\"."
-                    dotnetBuild ()
-                // the type of the project is not ws buildable (WIG or Proxy)
-                | Error ErrorCode.ProjectTypeNotPermitted -> 
-                    PrintHelpers.text indent "dotnet ws build can't use caching for this project (WIG or Proxy). Fallback to \"dotnet build\"."
-                    dotnetBuild ()
-                // cache of the project is outdated
-                | Error ErrorCode.ProjectOutdated ->
-                    PrintHelpers.text indent "Project's dependencies changed since last build. Fallback to \"dotnet build\"."
-                    dotnetBuild ()
-                | Some errorCode -> errorCode
-                | None ->
-                    PrintHelpers.text indent "No running wsfscservice found with the version %s. Fallback to \"dotnet build\"." version
-                    dotnetBuild ()
-            else
-                PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
-                dotnetBuild ()
-        with
-        | :? UnauthorizedAccessException | :? Security.SecurityException -> 
-            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache (Unauthorized). Fallback to \"dotnet build\"."
-            dotnetBuild ()
-        | :? FileNotFoundException | :? DirectoryNotFoundException ->
-            PrintHelpers.text indent """Cache file for restored nuget packages is not found (first build or after a clean). Fallback to "dotnet build"."""
-            dotnetBuild ()
-        | :? IOException ->
-            PrintHelpers.text indent "Couldn't read obj/project.nuget.cache. Fallback to \"dotnet build\"."
-            dotnetBuild ()
-        | x ->
-            PrintHelpers.text indent """Couldn't build project because: %s
-
-Fallback to "dotnet build".
-"""                     x.Message
-            dotnetBuild ()
+        // --time prints the build service's per-stage output as info; otherwise only the total, as normal text.
+        let printOut (n: string) =
+            if verbose then
+                PrintHelpers.info indent "%s" n
+            elif n.Contains "Total compilation time" then
+                PrintHelpers.text indent "%s" n
+        buildThroughBooster indent printOut projectFile dotnetBuild
     finally
         Environment.CurrentDirectory <- previousDir
 
@@ -319,16 +241,116 @@ let build indent (f: Process -> unit) (buildParams: ParseResults<BuildArguments>
         PrintHelpers.error indent "Error while building: %s." x.Message
         1
 
-let dotnetBinaryFolder =
-    [
-        "net11.0"
-        "net10.0"
-        "net9.0"
-        "net8.0"
-        "net7.0"
-        "net6.0"
-        "net5.0"
-    ]
+/// dotnet ws start: the booster of the WebSharper.FSharp.Booster tool if the build would use it,
+/// else the portable booster of the WebSharper.FSharp package (WebSharper 11+), else the
+/// per-platform booster of a WebSharper 10 and earlier package.
+let start (startParams: ParseResults<StartArguments>) =
+    let nugetRoot = Boosters.defaultNuGetRoot ()
+    let fsharpFolder = Path.Combine(nugetRoot, "websharper.fsharp")
+    let version =
+        match startParams.TryGetResult StartArguments.Version with
+        | Some v -> Some v
+        | None ->
+            match Boosters.tryProjectPackageVersion "websharper.fsharp" Environment.CurrentDirectory with
+            | Some v -> Some v
+            | None ->
+                try
+                    Directory.EnumerateDirectories(fsharpFolder)
+                    |> Seq.map (fun x -> SemVer.parse (DirectoryInfo(x).Name))
+                    |> Seq.max
+                    |> (fun x -> x.ToString())
+                    |> Some
+                with _ -> None
+    match version with
+    | None ->
+        PrintHelpers.error 0 "Couldn't find a WebSharper.FSharp package in %s. Specify the version with --version." nugetRoot
+        1
+    | Some version ->
+    let toolFolder =
+        match Boosters.locateTool "WebSharper.FSharp.Booster" "wsfsc.dll" version Environment.CurrentDirectory None with
+        | Boosters.ManifestTool (_, entry) | Boosters.GlobalTool entry -> Some (Path.GetDirectoryName entry)
+        | _ -> None
+    match toolFolder |> Option.orElse (Boosters.tryPortableFolder nugetRoot version) with
+    | Some folder ->
+        match Boosters.registered () |> List.tryFind (fun b -> Boosters.sameFolder b.Folder folder) with
+        | Some b ->
+            PrintHelpers.text 0 "Already running: %s" (CompilerCommand.formatBooster b)
+            0
+        | None ->
+            try
+                match Boosters.startBooster folder 10000 with
+                | Some b ->
+                    PrintHelpers.text 0 "Started: %s" (CompilerCommand.formatBooster b)
+                    0
+                | None ->
+                    PrintHelpers.error 0 "The booster in %s didn't start within 10 seconds." folder
+                    1
+            with ex ->
+                PrintHelpers.error 0 "Couldn't start the booster in %s (%s)" folder ex.Message
+                1
+    | None ->
+        // WebSharper 10 and earlier: tools/<tfm>/<rid>/wsfscservice_start.cmd|sh
+        let rid =
+            match startParams.TryGetResult RID with
+            | Some rid -> rid.ToString()
+            | None -> Boosters.currentRid ()
+        match Boosters.tryLegacyStartScript nugetRoot version rid with
+        | None ->
+            PrintHelpers.error 0 "Couldn't find the booster of WebSharper.FSharp %s in %s." version nugetRoot
+            1
+        | Some script ->
+            let startInfo = ProcessStartInfo(script)
+            startInfo.CreateNoWindow <- true
+            startInfo.UseShellExecute <- false
+            startInfo.WindowStyle <- ProcessWindowStyle.Hidden
+            startInfo.Arguments <- "./websharper.log"
+            try
+                Process.Start(startInfo) |> ignore
+                PrintHelpers.text 0 "version: %s; path: %s Started." version script
+                0
+            with ex ->
+                PrintHelpers.error 0 "Couldn't start wsfscservice_start in %s (%s)" script ex.Message
+                1
+
+/// dotnet ws stop: an exit message (or kill with --force) to every running booster, or the ones of a version.
+let stop (stopParams: ParseResults<StopArguments>) =
+    let versionArg = stopParams.TryGetResult StopArguments.Version
+    try
+        let boosters =
+            Boosters.running ()
+            |> List.filter (fun b ->
+                match versionArg with
+                | Some v -> Boosters.matchesVersion v b || b.Version = Some v
+                | None -> true)
+        let results =
+            boosters
+            |> List.map (fun b ->
+                try
+                    if stopParams.Contains Force then
+                        Boosters.kill b
+                        PrintHelpers.text 0 "Stopped %s" (CompilerCommand.formatBooster b)
+                    else
+                        let exited = Boosters.sendExit 5000 b
+                        PrintHelpers.text 0 "Stop signal sent to %s%s" (CompilerCommand.formatBooster b) (if exited then "" else " (still running after 5 seconds)")
+                    0
+                with ex ->
+                    PrintHelpers.error 0 "Couldn't stop the booster with PID=%i: %s" b.Pid ex.Message
+                    1)
+        let returnCode =
+            match versionArg, boosters with
+            | Some v, [] ->
+                PrintHelpers.text 0 "Could not find running service with version: %s" v
+                1
+            | None, [] ->
+                PrintHelpers.text 0 "There are no boosters running."
+                0
+            | _ -> List.max results
+        if returnCode = 0 && versionArg.IsNone && stopParams.Contains StopArguments.``Clear-Cache`` then
+            FileCompile.clearCacheFolder ()
+        returnCode
+    with ex ->
+        PrintHelpers.error 0 "Couldn't read processes: %s" ex.Message
+        1
 
 // Extracts out all <Compile Include../> items from the project file
 let getFilesToWatch (path: string) =
@@ -521,10 +543,14 @@ SUBCOMMANDS:
         Watch the current folder and rebuild or compile changed projects/files.
           -p, --pattern <GLOB>   Only watch files matching this glob.
 
-    start --rid <RID> [--version <VER>]
-        Start the Booster service (wsfscservice).
-          -r, --rid <RID>        Runtime identifier: win-x64 | linux-x64 | linux-musl-x64.
-          -v, --version <VER>    Booster version (default: latest cached).
+    start [--version <VER>] [--rid <RID>]
+        Start the Booster service (wsfscservice): the one of the
+        WebSharper.FSharp.Booster tool if the build would use it, otherwise the
+        one of the WebSharper.FSharp package.
+          -v, --version <VER>    WebSharper version (default: the project's in the
+                                 current folder, else the latest cached).
+          -r, --rid <RID>        WebSharper 10 and earlier only: the platform
+                                 of the booster in the package (default: current).
 
     stop [--version <VER>] [--force] [--clear-cache]
         Send a stop signal to running Booster service(s).
@@ -534,6 +560,24 @@ SUBCOMMANDS:
 
     list
         List running Booster versions and their source paths.
+
+    compiler status [--project <PROJ>]
+        Show which WebSharper compiler each project builds with (the Booster
+        tool or the portable compiler), and the running boosters.
+        WebSharper 11+.
+          -p, --project <PROJ>   Project or solution (.sln/.slnx) file.
+
+    compiler sync [--project <PROJ>] [--local | --global] [--source <SRC>]
+        Install or update the WebSharper.FSharp.Booster / WebSharper.CSharp.Booster
+        tools to the WebSharper version the projects reference, and stop
+        boosters the next build no longer uses. Updates a tool manifest that
+        lists them; otherwise needs --local or --global. Needs .NET SDK 10+.
+        WebSharper 11+.
+          -p, --project <PROJ>   Project or solution (.sln/.slnx) file.
+              --local            Add the tools to the nearest tool manifest, or
+                                 create one in the repository root.
+              --global           Install the tools globally.
+          -s, --source <SRC>     An additional NuGet package source.
 
     info
         Print the version of the dotnet ws tool.
@@ -545,9 +589,12 @@ EXAMPLES:
     dotnet ws build --time
     dotnet ws compile -v 10.1.8.682 Client.fs
     dotnet ws watch --pattern '*.fs'
-    dotnet ws start -r linux-x64
+    dotnet ws start
+    dotnet ws start -v 10.1.8.682 -r linux-x64
     dotnet ws stop --force
-    dotnet ws list"""
+    dotnet ws list
+    dotnet ws compiler status
+    dotnet ws compiler sync --local"""
 
 [<EntryPoint>]
 let main argv =
@@ -587,144 +634,44 @@ let main argv =
                         ()
                     0
         | Start startParams ->
-            let rid = startParams.GetResult RID
-            let ridString = rid.ToString()
-            try
-                let nugetRoot = 
-                    match Environment.GetEnvironmentVariable("NUGET_PACKAGES") |> Option.ofObj with
-                    | Some x -> x
-                    //%USERPROFILE%\.nuget\packages win
-                    //~/.nuget/packages linux
-                    | None -> Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".nuget", "packages")
-                let fsharpFolder = Path.Combine(nugetRoot, "websharper.fsharp")
-                try
-                    let version =
-                        match startParams.TryGetResult StartArguments.Version with
-                        | Some semver -> semver
-                        | None ->
-                            Directory.EnumerateDirectories(fsharpFolder)
-                            |> Seq.map (fun x ->
-                                let justFolder = DirectoryInfo(x).Name
-                                SemVer.parse(justFolder))
-                            |> Seq.max
-                            |> (fun x -> x.ToString())
-                    // start a detached wsfscservice.exe. Platform specific.
-                    let cmdName = if System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Windows) then
-                                      "wsfscservice_start.cmd" else "wsfscservice_start.sh"
-                    let cmdFullPath =
-                        dotnetBinaryFolder
-                        |> List.tryPick (fun folder ->
-                            Path.Combine(fsharpFolder, version, "tools", folder, ridString, cmdName)
-                            |> fun path ->
-                                if File.Exists path then
-                                    Some path
-                                else
-                                    None
-                        )
-
-                    match cmdFullPath with
-                    | None ->
-                        failwith "dummy" // It will become "Couldn't find wsfscservice_start"
-                    | Some cmdFullPath ->
-                        let startInfo = ProcessStartInfo(cmdFullPath)
-                        startInfo.CreateNoWindow <- true
-                        startInfo.UseShellExecute <- false
-                        startInfo.WindowStyle <- ProcessWindowStyle.Hidden
-                        startInfo.Arguments <- "./websharper.log"
-                        try
-                            Process.Start(startInfo) |> ignore
-                            PrintHelpers.text 0 "version: %s; path: %s Started." version cmdFullPath
-                            0
-                        with ex ->
-                            PrintHelpers.error 0 "Couldn't start wsfscservice_start in %s (%s)" cmdFullPath ex.Message
-                            1
-                with
-                | :? Argu.ArguParseException ->
-                    reraise()
-                | _ ->
-                    PrintHelpers.error 0 "Couldn't find wsfscservice_start."
-                    1
-            with
-            | :? Argu.ArguParseException ->
-                reraise()
-            | _ ->
-                PrintHelpers.error 0 "Couldn't find nuget packages root folder."
-                1
+            start startParams
         | Stop stopParams ->
-            let versionArg = stopParams.TryGetResult StopArguments.Version
-            let tryKill (returnCode, successfulErrorPrint) (proc: Process) =
-                try
-                    let fd =
-                        let fileInfo = proc.MainModule.FileVersionInfo
-                        if String.IsNullOrWhiteSpace fileInfo.FileDescription then
-                            Path.GetFileName proc.MainModule.FileName
-                        else
-                            fileInfo.FileDescription
-                    let killOrSend (x: Process) = 
-                        if stopParams.Contains Force then
-                            x.Kill()
-                            PrintHelpers.text 0 "Stopped %s with PID=%i" fd x.Id
-                            (0, true)
-                        else
-                            let clientPipe = clientPipeForLocation x.MainModule.FileName
-                            sendOneMessage clientPipe {args = [|"exit"|]}
-                            PrintHelpers.text 0 "Stop signal sent to %s with PID=%i" fd x.Id
-                            (0, true)
-                    match versionArg with
-                    | Some v ->
-                        let versionToMatch = tryGetProcessVersion proc
-                        if versionToMatch = Some v then
-                            killOrSend proc
-                        else
-                            if returnCode <> 0 then
-                                (1, successfulErrorPrint)
-                            else
-                                (returnCode, successfulErrorPrint)
-                    | None ->
-                        killOrSend proc
-                with
-                | _ ->
-                    try
-                        PrintHelpers.error 0 "Couldn't kill process with PID=%i" proc.Id
-                        (1, successfulErrorPrint)
-                    with
-                    | _ -> (1, false)
-            try
-                let (returnCode, successfulErrorPrint) = Process.GetProcessesByName("wsfscservice") |> Array.fold tryKill (1, true)
-                match versionArg with
-                | Some v ->
-                    if returnCode <> 0 then
-                        PrintHelpers.text 0 "Could not find running service with version: %s" v
-                | None -> ()
-                if successfulErrorPrint |> not then
-                    PrintHelpers.error 0 "Couldn't read processes."
-                if returnCode = 0 && stopParams.TryGetResult StopArguments.Version |> Option.isNone && stopParams.TryGetResult StopArguments.``Clear-Cache`` |> Option.isSome then
-                    FileCompile.clearCacheFolder ()
-                returnCode
-            with
-            | _ -> 1
+            stop stopParams
         | List ->
             try
-                let procInfos = 
-                    Process.GetProcessesByName("wsfscservice")
-                    |> Array.map (fun proc ->
-                        let versionToQueryBy =
-                            tryGetProcessVersion proc
-                            |> Option.defaultValue "unknown"
-                        sprintf "version: %s; path: %s" versionToQueryBy proc.MainModule.FileName
-                    )
-                if procInfos.Length = 0 then
-                    PrintHelpers.text 0 "There are no wsfscservices running."
-                else
-                    PrintHelpers.text 0 """The following wsfscservice versions are running:
-
-  %s.""" 
-                        (String.Join(sprintf "%s  " Environment.NewLine, procInfos))
+                CompilerCommand.printRunning (Boosters.running ())
                 0
             with
             | _ ->
                 PrintHelpers.error 0 "Couldn't read processes."
                 1
+        | Compiler compilerParams ->
+            match compilerParams.GetSubCommand() with
+            | CompilerCommand.Status statusParams ->
+                match CompilerCommand.resolveProjects (statusParams.TryGetResult CompilerCommand.StatusArguments.Project) with
+                | Result.Error msg ->
+                    PrintHelpers.error 0 "%s" msg
+                    1
+                | Ok (projects, _) ->
+                    CompilerCommand.status projects
+            | CompilerCommand.Sync syncParams ->
+                let mode =
+                    match syncParams.Contains CompilerCommand.SyncArguments.Local, syncParams.Contains CompilerCommand.SyncArguments.Global with
+                    | true, true -> None
+                    | true, false -> Some CompilerCommand.LocalMode
+                    | false, true -> Some CompilerCommand.GlobalMode
+                    | false, false -> Some CompilerCommand.DefaultMode
+                match mode with
+                | None ->
+                    PrintHelpers.error 0 "Use either --local or --global."
+                    1
+                | Some mode ->
+                    match CompilerCommand.resolveProjects (syncParams.TryGetResult CompilerCommand.SyncArguments.Project) with
+                    | Result.Error msg ->
+                        PrintHelpers.error 0 "%s" msg
+                        1
+                    | Ok (projects, rootDir) ->
+                        CompilerCommand.sync projects rootDir mode (syncParams.TryGetResult CompilerCommand.SyncArguments.Source)
         | Build buildParams ->
             build 0 (ignore) buildParams
         | Compile arguments -> FileCompile.CompileFile arguments
