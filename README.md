@@ -8,7 +8,7 @@ dotnet tool install -g dotnet-ws
 
 # Usage
 
-Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `stats`, `compiler status`, `compiler sync`, `info`), their options, and examples.
+Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `stats`, `mcp`, `compiler status`, `compiler sync`, `info`), their options, and examples.
 
 `dotnet ws stats` shows the statistics the WebSharper 11 boosters keep on this machine: how long messages, compilation stages and agent tools take, and what agents ask. `--json` prints them as JSON.
 
@@ -19,6 +19,22 @@ From WebSharper 11, the `WebSharper.FSharp` and `WebSharper.CSharp` packages con
 - `dotnet ws compiler status` shows which compiler each project builds with and why, and the running boosters.
 - `dotnet ws compiler sync --local` adds the Booster tools at the projects' WebSharper version to the nearest tool manifest (or creates one in the repository root), `--global` installs them globally, and with neither it updates a manifest that already lists them. After a WebSharper update, run `dotnet ws compiler sync` again. Installing the tools needs .NET SDK 10 or newer.
 - `dotnet ws start`, `stop`, `list` and the `build` fast path find WebSharper 11 boosters through the records they write to `websharper-boosters` in the temp folder, whether they run from a Booster tool or from the package (as `dotnet wsfscservice.dll`). Boosters of WebSharper 10 and earlier still work as before; for them, `start` takes `--rid`.
+
+## Using with AI agents
+
+`dotnet ws mcp` runs the WebSharper Booster's [MCP](https://modelcontextprotocol.io) server over stdio, so AI agents can ask about the projects the Booster compiled: diagnostics, F# signatures, symbol search and usages, how WebSharper translates code to JavaScript, RPC methods, and fast rebuilds. Configure it as a stdio MCP server started in your project's folder, for example in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "websharper": { "command": "dotnet", "args": [ "ws", "mcp" ] }
+  }
+}
+```
+
+It uses the Booster your projects build with: the `WebSharper.FSharp.Booster` tool if the build uses it, else the one of the WebSharper.FSharp package (`--project`, `--version` or `--booster` choose another). That needs WebSharper 11.0.0-preview.2 or newer. Build the project once to start the Booster and give it something to answer about.
+
+Packages that add agent tools (they set `WebSharperAgentExtensions` in their `.props`) are found in the restored packages of the projects and passed to the server with `--extension`.
 
 # Dependencies
 

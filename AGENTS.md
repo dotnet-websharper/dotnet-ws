@@ -7,7 +7,7 @@ compilation.
 
 - An F# .NET tool (`PackAsTool`, `ToolCommandName=dotnet-ws`, invoked as `dotnet ws`).
 - Subcommands (parsed with Argu in `Program.fs`): `build`, `compile`, `watch`,
-  `start`, `stop`, `list`, `compiler status`, `compiler sync`, `info`.
+  `start`, `stop`, `list`, `stats`, `mcp`, `compiler status`, `compiler sync`, `info`.
 - Purpose: fast WebSharper compilation through the long-running Booster service
   (`wsfscservice`), with `dotnet build` as the fallback; plus one-file
   compilation (`compile`) and a file watcher (`watch`).
@@ -78,6 +78,8 @@ that, trigger the workflow from the Actions UI and create the release manually.
 | `Boosters.fs` | Booster discovery (records + legacy processes), pipe client, start/stop/kill, the Booster tool lookup (port of core's `BoosterLocator.cs`), package folders |
 | `FileCompile.fs` | `BuildHelpers` (output, `buildThroughBooster` fast path shared by `build` and `compile`, `buildProjectFile`); one-file `compile`; `projectFileSetup` |
 | `CompilerCommand.fs` | `compiler status` / `compiler sync` (WebSharper 11+): project properties via `dotnet msbuild -getProperty`, the compiler the task would pick, `dotnet tool` install/update |
+| `StatsCommand.fs` | `dotnet ws stats` (WebSharper 11+): asks running boosters for their statistics (the `stats` message), reads those stopped ones saved in `websharper-boosters/stats/` |
+| `McpCommand.fs` | `dotnet ws mcp` (WebSharper 11+): chooses the booster the build uses, finds agent extensions in the projects' packages, runs `wsfscservice --mcp` |
 | `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.info` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
 | `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`, `boosterPipeName`) and `BoosterRecord` — must stay in sync with `core/src/compiler/WebSharper.Compiler/WsFscServiceCommon.fs` |
 | `dotnet-ws.sln`, `dotnet-ws.fsproj`, `WebSharper.Compiler/…` | Solution and projects |
@@ -159,6 +161,20 @@ version can both run); on any other failure fall back to `dotnet build "<project
   sync. `compiler status` mirrors the task's order: explicit
   `WebSharperToolPath`, `WebSharperUseBoosterTool=false`, manifest (WSB9101 /
   WSB9102), global, portable.
+- **`dotnet ws mcp`** (`McpCommand.fs`): runs `dotnet <booster folder>/wsfscservice.dll --mcp`,
+  the booster's MCP server for AI agents (`core/src/compiler/WebSharper.FSharp.Service/Mcp.fs`),
+  with this process's stdio inherited. It speaks no pipe protocol itself: the `--mcp` process talks
+  to the running booster of the same folder. The folder is the one the build uses, as `dotnet ws
+  start` chooses it (`folderFor`: the Booster tool, else the package's `tools/net11.0`), for
+  `--booster`/`--version` if given, else the projects' restored WebSharper.FSharp version under (or
+  above) the current folder, else a running booster, else the newest installed. Boosters up to
+  11.0.0.756 have no `--mcp` and would start as a booster holding the agent's stdio, so
+  `supportsMcp` checks the dll for the `WebSharper.FSharp.Service.Mcp` type first. Packages whose
+  `build/*.props` add to `WebSharperAgentExtensions` are passed with `--extension`. **stdout is the
+  MCP channel**: everything the command prints goes to stderr, including the version banner.
+- **Booster statistics** (`StatsCommand.fs`): boosters keep them in memory and save them to
+  `websharper-boosters/stats/<record name>.json` — a subfolder, because `Boosters.registered`
+  treats every `.json` file of the records folder as a record.
 
 ## Conventions
 

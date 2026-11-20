@@ -28,6 +28,7 @@
     <Compile Include="BuildInfo.fs" />
     <Compile Include="CompilerCommand.fs" />
     <Compile Include="StatsCommand.fs" />
+    <Compile Include="McpCommand.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

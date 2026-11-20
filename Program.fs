@@ -67,6 +67,7 @@ type Argument =
     | [<CliPrefix(CliPrefix.None); SubCommand>] Info
     | [<CliPrefix(CliPrefix.None); SubCommand>] List
     | [<CliPrefix(CliPrefix.None)>] Stats of ParseResults<StatsArguments>
+    | [<CliPrefix(CliPrefix.None)>] Mcp of ParseResults<McpArguments>
     | [<CliPrefix(CliPrefix.None)>] Compile of ParseResults<CompileArguments>
     | [<CliPrefix(CliPrefix.None)>] Watch of ParseResults<WatchArguments>
     | [<CliPrefix(CliPrefix.None)>] Compiler of ParseResults<CompilerCommand.CompilerArguments>
@@ -78,6 +79,7 @@ type Argument =
             | Start _ -> "Start the Booster service (wsfscservice) of the given version: the one of the WebSharper.FSharp.Booster tool if installed, otherwise the one of the WebSharper.FSharp package. If no version is given, the version of the project in the current folder, or the latest in the local NuGet cache, is used."
             | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
             | List -> "List running Booster versions and their source paths."
+            | Mcp _ -> "Run the Booster's MCP server for AI agents over stdio: diagnostics, signatures, symbol search and JavaScript translation of the projects the Booster compiled (WebSharper 11+)."
             | Stats _ -> "Show the statistics of the boosters: how long messages, compilation stages and agent tools take (WebSharper 11+)."
             | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
             | Compile _ -> "Compile a given fs(x) file to JavaScript or TypeScript utilizing WebSharper's Booster if enabled"
@@ -115,6 +117,18 @@ and StopArguments =
             | Version _ -> "Specify the version of the Booster service."
             | Force -> "Force the specified operation (used for the stop subcommand)."
             | ``Clear-Cache`` -> "Clear local temp folder data."
+
+and McpArguments =
+    | [<AltCommandLine("-p")>] Project of string
+    | [<AltCommandLine("-v")>] Version of semver:string
+    | [<AltCommandLine("-b")>] Booster of path:string
+
+    interface IArgParserTemplate with
+        member s.Usage =
+            match s with
+            | Project _ -> "Project file or folder whose WebSharper.FSharp version to use. Defaults to the projects in the current folder."
+            | Version _ -> "WebSharper.FSharp version of the Booster to use."
+            | Booster _ -> "Path of a Booster (wsfscservice.dll, its executable or its folder), e.g. a local build of the WebSharper compiler."
 
 and StatsArguments =
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -573,6 +587,18 @@ SUBCOMMANDS:
     list
         List running Booster versions and their source paths.
 
+    mcp [--project <PROJ>] [--version <VER>] [--booster <PATH>]
+        Run the Booster's MCP server for AI agents over stdio, for the projects
+        the Booster compiled: diagnostics, F# signatures, symbol search and
+        usages, and how WebSharper translates code to JavaScript. Uses the
+        Booster the build uses (the WebSharper.FSharp.Booster tool, or the
+        package's), and the agent extensions of the projects' packages.
+        WebSharper 11+.
+          -p, --project <PROJ>   Project file or folder whose WebSharper.FSharp
+                                 version to use (default: the current folder).
+          -v, --version <VER>    WebSharper.FSharp version of the Booster.
+          -b, --booster <PATH>   A Booster build: wsfscservice.dll or its folder.
+
     stats [--version <VER>] [--json]
         Show the statistics of the boosters (WebSharper 11+): how long each
         message, compilation stage and agent tool takes, and what agents ask.
@@ -613,6 +639,8 @@ EXAMPLES:
     dotnet ws start -v 10.1.8.682 -r linux-x64
     dotnet ws stop --force
     dotnet ws list
+    dotnet ws stats
+    dotnet ws mcp
     dotnet ws compiler status
     dotnet ws compiler sync --local"""
 
@@ -621,7 +649,9 @@ let main argv =
     let v = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version
     let helpMessage =
         sprintf "WebSharper .NET CLI version %d.%d.%d" v.Major v.Minor v.Build
-    PrintHelpers.text 0 "%s" helpMessage
+    // `mcp` speaks the protocol on stdout, nothing else may be printed there
+    let isMcp = argv.Length > 0 && argv.[0] = "mcp"
+    if isMcp then eprintfn "%s" helpMessage else PrintHelpers.text 0 "%s" helpMessage
     let parser = ArgumentParser.Create<Argument>(programName = "dotnet ws", checkStructure = true)
     try
         let result = parser.Parse argv
@@ -657,6 +687,8 @@ let main argv =
             start startParams
         | Stop stopParams ->
             stop stopParams
+        | Mcp mcpParams ->
+            McpCommand.run (mcpParams.TryGetResult McpArguments.Booster) (mcpParams.TryGetResult McpArguments.Version) (mcpParams.TryGetResult McpArguments.Project)
         | Stats statsParams ->
             StatsCommand.run (statsParams.TryGetResult StatsArguments.Version) (statsParams.Contains StatsArguments.Json)
         | List ->
@@ -702,6 +734,9 @@ let main argv =
         if argv.Length = 0 || (argv |> Array.exists (fun a -> a = "--help" || a = "-h")) then
             PrintHelpers.text 0 "%s" usageText
             0
+        elif isMcp then
+            eprintfn "%s." ex.Message
+            1
         else
             printfn "%s." ex.Message
             1
