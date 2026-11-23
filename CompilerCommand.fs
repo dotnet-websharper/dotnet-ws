@@ -219,10 +219,18 @@ let compilerPath (choice: CompilerChoice) =
     | Lookup ((Boosters.ManifestTool (_, path) | Boosters.GlobalTool path), _) -> path
     | Lookup (_, portable) -> portable
 
-/// The folder of the booster an F# project builds with, None if it builds standalone.
+/// The booster language of a project.
+let boosterLanguage (lang: Lang) =
+    match lang with FSharp -> Boosters.FSharp | CSharp -> Boosters.CSharp
+
+/// The folder of the booster a project builds with: wsfscservice next to wsfsc for F#, wscscservice next to wscsc for
+/// C# (WebSharper 11.0.0-preview.2 and later; earlier C# compilers have no booster). None if it builds standalone.
 let boosterFolder (p: WsProject) =
-    if p.Lang <> FSharp || p.Standalone then None
-    else Some (Path.GetDirectoryName(compilerPath (choose p)))
+    if p.Standalone then None else
+    let folder = Path.GetDirectoryName(compilerPath (choose p))
+    match p.Lang with
+    | FSharp -> Some folder
+    | CSharp -> if File.Exists(Path.Combine(folder, Boosters.CSharp.ServiceDll)) then Some folder else None
 
 // ---------------------------------------------------------------------------------------------
 // Output
@@ -267,13 +275,14 @@ let printProject (running: Boosters.RunningBooster list) (state: ProjectState) =
         | Lookup (Boosters.NoTool, portable) ->
             PrintHelpers.text 2 "Compiler: portable, %s" portable
             PrintHelpers.info 2 "No tool manifest lists %s and it is not installed globally at version %s. For the ReadyToRun compiler: dotnet ws compiler sync --local (or --global)" id p.Version
-        if p.Lang = FSharp then
-            match boosterFolder p with
-            | None -> PrintHelpers.text 2 "Booster: not used (WebSharperStandalone is true)"
-            | Some folder ->
-                match running |> List.tryFind (fun b -> Boosters.sameFolder b.Folder folder) with
-                | Some b -> PrintHelpers.text 2 "Booster: running, PID %i" b.Pid
-                | None -> PrintHelpers.text 2 "Booster: not running, the next build starts it"
+        match boosterFolder p with
+        | None when p.Standalone -> PrintHelpers.text 2 "Booster: not used (WebSharperStandalone is true)"
+        | None -> ()
+        | Some folder ->
+            let language = boosterLanguage p.Lang
+            match running |> List.tryFind (fun b -> b.Language = language && Boosters.sameFolder b.Folder folder) with
+            | Some b -> PrintHelpers.text 2 "Booster: running, PID %i" b.Pid
+            | None -> PrintHelpers.text 2 "Booster: not running, the next build starts it"
 
 let printRunning (running: Boosters.RunningBooster list) =
     match running with

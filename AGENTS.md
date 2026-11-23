@@ -79,9 +79,9 @@ that, trigger the workflow from the Actions UI and create the release manually.
 | `FileCompile.fs` | `BuildHelpers` (output, `buildThroughBooster` fast path shared by `build` and `compile`, `buildProjectFile`); one-file `compile`; `projectFileSetup` |
 | `CompilerCommand.fs` | `compiler status` / `compiler sync` (WebSharper 11+): project properties via `dotnet msbuild -getProperty`, the compiler the task would pick, `dotnet tool` install/update |
 | `StatsCommand.fs` | `dotnet ws stats` (WebSharper 11+): asks running boosters for their statistics (the `stats` message), reads those stopped ones saved in `websharper-boosters/stats/` |
-| `McpCommand.fs` | `dotnet ws mcp` (WebSharper 11+): chooses the booster the build uses, finds agent extensions in the projects' packages, runs `wsfscservice --mcp` |
+| `McpCommand.fs` | `dotnet ws mcp` (WebSharper 11+): chooses the language and the booster the build uses, finds agent extensions in the projects' packages (F#), runs `wsfscservice --mcp` or `wscscservice --mcp` |
 | `BuildInfo.fs` | MSBuild graph capture: injects a targets hook that writes `obj/wsbuild.info` per project, reads/invalidates those manifests, computes the closure + topological order, and runs the capture build |
-| `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`, `boosterPipeName`) and `BoosterRecord` — must stay in sync with `core/src/compiler/WebSharper.Compiler/WsFscServiceCommon.fs` |
+| `WebSharper.Compiler/WsFscServiceCommon.fs` | Shared named-pipe protocol (`ArgsType`, `readingMessages`, `hashPath`, `boosterPipeName`, `cscBoosterPipeName`) and `BoosterRecord` (`boosterRecordPath`, `cscBoosterRecordPath`) — must stay in sync with `core/src/compiler/WebSharper.Compiler/WsFscServiceCommon.fs` |
 | `dotnet-ws.sln`, `dotnet-ws.fsproj`, `WebSharper.Compiler/…` | Solution and projects |
 | `build.cmd`, `.github/workflows/release.yml` | Packaging and release (manual `workflow_dispatch`, NuGet trusted publishing) |
 | `.config/dotnet-tools.json` | Stale placeholder (`1.0.0`) — do not rely on it for the real version |
@@ -172,6 +172,16 @@ version can both run); on any other failure fall back to `dotnet build "<project
   `supportsMcp` checks the dll for the `WebSharper.FSharp.Service.Mcp` type first. Packages whose
   `build/*.props` add to `WebSharperAgentExtensions` are passed with `--extension`. **stdout is the
   MCP channel**: everything the command prints goes to stderr, including the version banner.
+  For C# it runs `wscscservice.dll --mcp` (core's `WebSharper.CSharp.Service`, 11.0.0-preview.2+;
+  `supportsMcpOf` looks for `WebSharper.CSharp.Service.Mcp`) from the `WebSharper.CSharp.Booster`
+  tool or `websharper.csharp/<v>/tools/net11.0`, with no extensions. The language (`languageFor`) is
+  `--lang`, else the `--project` extension, else which compiler package the projects restored (F#
+  when both); with `--booster`, the dll named or present in the folder.
+- **Booster languages** (`Boosters.Language`): the C# booster writes the same `BoosterRecord`
+  under `cscBoosterRecordPath` (salt `WsCscServicePipe`, also its pipe), so `registered` tells the
+  language from the record's file name. Talk to a booster with `Boosters.pipeTo b`, never
+  `clientPipe b.Folder` (F# only). C# boosters don't compile: `start` and the `build` fast path
+  skip them; their statistics file is named after their record (`StatsCommand.statsPath`).
 - **Booster statistics** (`StatsCommand.fs`): boosters keep them in memory and save them to
   `websharper-boosters/stats/<record name>.json` — a subfolder, because `Boosters.registered`
   treats every `.json` file of the records folder as a record.

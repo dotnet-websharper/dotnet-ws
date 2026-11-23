@@ -5,6 +5,9 @@
 /// they run as the wsfscservice apphost of a Booster tool or as `dotnet wsfscservice.dll` from the
 /// WebSharper.FSharp package. WebSharper 10 and earlier boosters are wsfscservice processes without
 /// a record, started from the tools/<tfm>/<rid> folders of the package.
+///
+/// C# projects have a booster too since WebSharper 11.0.0-preview.2, wscscservice: it doesn't compile, wscsc reports
+/// its compilations to it, and it answers AI agents. It registers the same way, under its own pipe and record names.
 module Boosters
 
 open System
@@ -34,9 +37,28 @@ type BoosterKind =
     /// WebSharper 10 and earlier: a wsfscservice process without a record
     | Legacy
 
+/// The language of the projects a booster serves.
+type Language =
+    /// wsfscservice
+    | FSharp
+    /// wscscservice
+    | CSharp
+
+    member this.Name = match this with FSharp -> "F#" | CSharp -> "C#"
+    /// The booster's assembly
+    member this.ServiceDll = match this with FSharp -> "wsfscservice.dll" | CSharp -> "wscscservice.dll"
+    /// The compiler's assembly, the entry of the Booster tool
+    member this.CompilerDll = match this with FSharp -> "wsfsc.dll" | CSharp -> "wscsc.dll"
+    /// The compiler package, lowercase as in the NuGet folder
+    member this.PackageId = match this with FSharp -> "websharper.fsharp" | CSharp -> "websharper.csharp"
+    member this.BoosterToolId = match this with FSharp -> "WebSharper.FSharp.Booster" | CSharp -> "WebSharper.CSharp.Booster"
+    member this.PipeName (folder: string) = match this with FSharp -> boosterPipeName folder | CSharp -> cscBoosterPipeName folder
+    member this.RecordPath (folder: string) = match this with FSharp -> boosterRecordPath folder | CSharp -> cscBoosterRecordPath folder
+
 type RunningBooster =
     {
         Kind: BoosterKind
+        Language: Language
         Pid: int
         /// None when the version of a legacy booster can't be read
         Version: string option
@@ -93,9 +115,13 @@ let registered () =
             try File.Delete path with _ -> ()
             None
         | Ok (Some r) ->
+            // the record's name tells the language: a hash of the folder with the booster's pipe salt
+            let language =
+                if String.Equals(Path.GetFileName path, Path.GetFileName(cscBoosterRecordPath r.Folder), StringComparison.OrdinalIgnoreCase)
+                then CSharp else FSharp
             match tryGetProcess r.Pid with
             | Some p when sameStart p r.Started ->
-                Some { Kind = Registered; Pid = r.Pid; Version = Some r.Version; Folder = r.Folder; Process = p }
+                Some { Kind = Registered; Language = language; Pid = r.Pid; Version = Some r.Version; Folder = r.Folder; Process = p }
             | other ->
                 other |> Option.iter (fun p -> p.Dispose())
                 try File.Delete path with _ -> ()
@@ -115,7 +141,7 @@ let running () =
             else
                 try
                     let folder = Path.GetDirectoryName p.MainModule.FileName
-                    Some { Kind = Legacy; Pid = p.Id; Version = tryGetProcessVersion p; Folder = folder; Process = p }
+                    Some { Kind = Legacy; Language = FSharp; Pid = p.Id; Version = tryGetProcessVersion p; Folder = folder; Process = p }
                 with _ ->
                     p.Dispose()
                     None)
@@ -138,18 +164,27 @@ let sameFolder (a: string) (b: string) =
 
 /// Where a booster runs from, for listings.
 let describe (b: RunningBooster) =
-    match b.Kind with
-    | Legacy -> "per-platform booster of the package"
-    | Registered ->
-        let f = normalizedFolder b.Folder
-        if f.Contains "websharper.fsharp.booster" then "Booster tool"
-        elif f.Contains "/websharper.fsharp/" then "portable compiler"
-        else "local build"
+    let where =
+        match b.Kind with
+        | Legacy -> "per-platform booster of the package"
+        | Registered ->
+            let f = normalizedFolder b.Folder
+            if f.Contains(b.Language.BoosterToolId.ToLowerInvariant()) then "Booster tool"
+            elif f.Contains("/" + b.Language.PackageId + "/") then "portable compiler"
+            else "local build"
+    sprintf "%s, %s" b.Language.Name where
 
-let clientPipe (folder: string) =
+/// A pipe to the booster of a language running from a folder.
+let clientPipeOf (language: Language) (folder: string) =
     new NamedPipeClientStream(
-        ".", boosterPipeName folder, PipeDirection.InOut,
+        ".", language.PipeName folder, PipeDirection.InOut,
         PipeOptions.WriteThrough ||| PipeOptions.Asynchronous)
+
+/// A pipe to the F# booster of a folder.
+let clientPipe (folder: string) = clientPipeOf FSharp folder
+
+/// A pipe to a running booster.
+let pipeTo (b: RunningBooster) = clientPipeOf b.Language b.Folder
 
 let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
     let options = JsonSerializerOptions()
@@ -169,7 +204,7 @@ let sendOneMessage (clientPipe: NamedPipeClientStream) (message: ArgsType) =
 
 /// Asks a booster to exit after its current compilations, and waits for it up to the timeout.
 let sendExit (timeoutMs: int) (b: RunningBooster) =
-    use pipe = clientPipe b.Folder
+    use pipe = pipeTo b
     sendOneMessage pipe { args = [| "exit" |] }
     b.Process.WaitForExit timeoutMs
 
@@ -178,7 +213,7 @@ let kill (b: RunningBooster) =
     b.Process.WaitForExit 5000 |> ignore
     // a killed booster can't remove its own record
     if b.Kind = Registered then
-        try File.Delete(boosterRecordPath b.Folder) with _ -> ()
+        try File.Delete(b.Language.RecordPath b.Folder) with _ -> ()
 
 // ---------------------------------------------------------------------------------------------
 // Starting a booster, as core's WebSharper.FSharp/NamedPipeClient.fs does
@@ -287,7 +322,7 @@ let startBooster (folder: string) (timeoutMs: int) =
     startDetached fileName args folder
     let sw = Stopwatch.StartNew()
     let rec wait () =
-        match registered () |> List.tryFind (fun b -> sameFolder b.Folder folder) with
+        match registered () |> List.tryFind (fun b -> b.Language = FSharp && sameFolder b.Folder folder) with
         | Some b -> Some b
         | None when sw.ElapsedMilliseconds < int64 timeoutMs ->
             Threading.Thread.Sleep 200
@@ -406,10 +441,14 @@ let tryProjectPackageVersion (packageId: string) (projectDir: string) =
         if m.Success then Some m.Groups.[1].Value else None
     with _ -> None
 
+/// The folder of the portable booster of a language in its compiler package, WebSharper.FSharp or WebSharper.CSharp
+/// (WebSharper 11+, C# from 11.0.0-preview.2).
+let tryPortableFolderOf (language: Language) (nugetRoot: string) (version: string) =
+    let folder = Path.Combine(nugetRoot, language.PackageId, version.ToLowerInvariant(), "tools", "net11.0")
+    if File.Exists(Path.Combine(folder, language.ServiceDll)) then Some folder else None
+
 /// The folder of the portable booster in the WebSharper.FSharp package (WebSharper 11+).
-let tryPortableFolder (nugetRoot: string) (version: string) =
-    let folder = Path.Combine(nugetRoot, "websharper.fsharp", version.ToLowerInvariant(), "tools", "net11.0")
-    if File.Exists(Path.Combine(folder, "wsfscservice.dll")) then Some folder else None
+let tryPortableFolder (nugetRoot: string) (version: string) = tryPortableFolderOf FSharp nugetRoot version
 
 /// Target framework folders of packages with per-platform boosters, newest first: WebSharper 10 and
 /// earlier, and WebSharper 11 previews before the Booster tools.
