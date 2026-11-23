@@ -252,14 +252,15 @@ let run (boosterPath: string option) (version: string option) (project: string o
         let startInfo = ProcessStartInfo(Boosters.dotnetHost ())
         startInfo.ArgumentList.Add dll
         startInfo.ArgumentList.Add "--mcp"
+        // agent extensions of the projects' packages: both boosters load them (older C# boosters ignore --extension)
+        for ext in projectExtensions folder do
+            eprintfn "dotnet ws mcp: agent extension %s" ext
+            startInfo.ArgumentList.Add "--extension"
+            startInfo.ArgumentList.Add ext
         match language with
-        | Boosters.FSharp ->
-            for ext in projectExtensions folder do
-                eprintfn "dotnet ws mcp: agent extension %s" ext
-                startInfo.ArgumentList.Add "--extension"
-                startInfo.ArgumentList.Add ext
+        | Boosters.FSharp -> ()
         | Boosters.CSharp ->
-            // the C# booster doesn't load agent extensions, and knows only the projects built since it started
+            // the C# booster knows only the projects built since it started
             if not (Boosters.registered () |> List.exists (fun b -> b.Language = Boosters.CSharp && Boosters.sameFolder b.Folder choice.Folder)) then
                 eprintfn "dotnet ws mcp: the C# booster is not running: it starts with the next build of a WebSharper C# project (dotnet build), and answers about the projects built since."
         // stdin, stdout and stderr are inherited: the agent talks to the booster's MCP server directly
