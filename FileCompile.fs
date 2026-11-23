@@ -150,7 +150,8 @@ module BuildHelpers =
                 PrintHelpers.text indent "No WebSharper.FSharp package found in the downloaded nuget packages. Fallback to \"dotnet build\"."
                 dotnetBuild ()
             | Some version ->
-                let candidates = Boosters.running () |> List.filter (Boosters.matchesVersion version)
+                // C# boosters (wscscservice) don't compile
+                let candidates = Boosters.running () |> List.filter (fun b -> b.Language = Boosters.FSharp && Boosters.matchesVersion version b)
                 // the boosters of the portable compiler and of the Booster tool can run side by side:
                 // try each until one has this project cached
                 let rec tryNext notCached (boosters: Boosters.RunningBooster list) =

@@ -9,14 +9,17 @@ open System.Text.Json.Nodes
 open FileCompile.BuildHelpers
 open WebSharper.Compiler.WsFscServiceCommon
 
-/// The statistics file of the booster of a folder, as the booster writes it.
-let statsPath (folder: string) =
-    Path.Combine(boosterRecordFolder (), "stats", Path.GetFileNameWithoutExtension(boosterRecordPath folder) + ".json")
+/// The statistics file of the booster of a language and folder, as the booster writes it: named after its record.
+let statsPathOf (language: Boosters.Language) (folder: string) =
+    Path.Combine(boosterRecordFolder (), "stats", Path.GetFileNameWithoutExtension(language.RecordPath folder) + ".json")
+
+/// The statistics file of a running booster.
+let statsPath (b: Boosters.RunningBooster) = statsPathOf b.Language b.Folder
 
 /// Asks a running booster for its statistics (the "stats" message).
 let request (b: Boosters.RunningBooster) : Result<JsonObject, string> =
     try
-        use pipe = Boosters.clientPipe b.Folder
+        use pipe = Boosters.pipeTo b
         Boosters.sendOneMessage pipe { args = [| "stats" |] }
         let text = Text.StringBuilder()
         let handle (message: obj) =
@@ -46,7 +49,7 @@ let private readFile (path: string) =
 /// Statistics saved by boosters that are not running now.
 let saved (running: Boosters.RunningBooster list) =
     let dir = Path.Combine(boosterRecordFolder (), "stats")
-    let runningPaths = running |> List.map (fun b -> Path.GetFullPath(statsPath b.Folder)) |> Set.ofList
+    let runningPaths = running |> List.map (fun b -> Path.GetFullPath(statsPath b)) |> Set.ofList
     if not (Directory.Exists dir) then [] else
     Directory.GetFiles(dir, "*.json")
     |> Array.filter (fun p -> not (runningPaths.Contains(Path.GetFullPath p)))
@@ -110,7 +113,7 @@ let print (header: string) (stats: JsonObject) =
     printTimings "Messages (ms: wait in the queue, processing, total)" timings [ "msg." ] 30
     printTimings "Compilation stages (ms)" timings [ "compile.stage." ] 15
     printTimings "Agent tools in the booster (ms)" timings [ "tool." ] 30
-    printTimings "Agent requests, end to end in wsfscservice --mcp (ms)" timings [ "mcp.request."; "mcp.call." ] 30
+    printTimings "Agent requests, end to end in wsfscservice/wscscservice --mcp (ms)" timings [ "mcp.request."; "mcp.call." ] 30
     printTimings "Extensions (ms)" timings [ "ext." ] 20
     printTimings "Agent sessions (duration in seconds, tool calls)" timings [ "mcp.session." ] 5
     printTimings "Answer sizes (characters)" timings [ "msg."; "tool." ] 30
@@ -132,7 +135,7 @@ let run (version: string option) (json: bool) =
             match request b with
             | Result.Ok s -> Result.Ok (sprintf "Booster %s (running, PID %i)" (CompilerCommand.formatBooster b) b.Pid, s)
             | Result.Error e ->
-                match readFile (statsPath b.Folder) with
+                match readFile (statsPath b) with
                 | Some s -> Result.Ok (sprintf "Booster %s (running, PID %i; saved statistics: %s)" (CompilerCommand.formatBooster b) b.Pid e, s)
                 | None -> Result.Error (sprintf "Booster %s: no statistics, %s" (CompilerCommand.formatBooster b) e))
     let fromFiles =

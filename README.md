@@ -18,7 +18,7 @@ From WebSharper 11, the `WebSharper.FSharp` and `WebSharper.CSharp` packages con
 
 - `dotnet ws compiler status` shows which compiler each project builds with and why, and the running boosters.
 - `dotnet ws compiler sync --local` adds the Booster tools at the projects' WebSharper version to the nearest tool manifest (or creates one in the repository root), `--global` installs them globally, and with neither it updates a manifest that already lists them. After a WebSharper update, run `dotnet ws compiler sync` again. Installing the tools needs .NET SDK 10 or newer.
-- `dotnet ws start`, `stop`, `list` and the `build` fast path find WebSharper 11 boosters through the records they write to `websharper-boosters` in the temp folder, whether they run from a Booster tool or from the package (as `dotnet wsfscservice.dll`). Boosters of WebSharper 10 and earlier still work as before; for them, `start` takes `--rid`.
+- `dotnet ws start`, `stop`, `list` and the `build` fast path find WebSharper 11 boosters through the records they write to `websharper-boosters` in the temp folder, whether they run from a Booster tool or from the package (as `dotnet wsfscservice.dll`). Boosters of WebSharper 10 and earlier still work as before; for them, `start` takes `--rid`. The C# Booster (`wscscservice`, WebSharper 11.0.0-preview.2+) registers the same way under its own record name; `stop`, `list` and `stats` include it, while `start` and the `build` fast path use F# Boosters only, since the C# Booster doesn't compile.
 
 ## Using with AI agents
 
@@ -35,6 +35,18 @@ From WebSharper 11, the `WebSharper.FSharp` and `WebSharper.CSharp` packages con
 It uses the Booster your projects build with: the `WebSharper.FSharp.Booster` tool if the build uses it, else the one of the WebSharper.FSharp package (`--project`, `--version` or `--booster` choose another). That needs WebSharper 11.0.0-preview.2 or newer. Build the project once to start the Booster and give it something to answer about.
 
 Packages that add agent tools (they set `WebSharperAgentExtensions` in their `.props`) are found in the restored packages of the projects and passed to the server with `--extension`.
+
+For C# projects it runs the C# Booster's server instead (`wscscservice --mcp`, WebSharper 11.0.0-preview.2 or newer), from the `WebSharper.CSharp.Booster` tool or the WebSharper.CSharp package. The C# Booster doesn't compile: `wscsc` reports each build to it, so it answers about the C# projects built since it started. It answers WebSharper diagnostics, how WebSharper translates code to JavaScript, symbol search and RPC methods, but has no C# signatures or usages, and it loads no agent extensions. `dotnet ws mcp` picks the language of `--project`, or of the projects in the folder; in a folder with both, it uses the F# Booster unless you pass `--lang csharp`:
+
+```json
+{
+  "mcpServers": {
+    "websharper-csharp": { "command": "dotnet", "args": [ "ws", "mcp", "--lang", "csharp" ] }
+  }
+}
+```
+
+`dotnet ws list`, `stop`, `stats` and `compiler status` show C# Boosters too, labelled `C#`.
 
 # Dependencies
 

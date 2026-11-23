@@ -79,7 +79,7 @@ type Argument =
             | Start _ -> "Start the Booster service (wsfscservice) of the given version: the one of the WebSharper.FSharp.Booster tool if installed, otherwise the one of the WebSharper.FSharp package. If no version is given, the version of the project in the current folder, or the latest in the local NuGet cache, is used."
             | Stop _ -> "Send a stop signal to the Booster service with the given version. If no version is given all running instances are signaled. Use `--force` to kill process(es) instead of sending a stop signal."
             | List -> "List running Booster versions and their source paths."
-            | Mcp _ -> "Run the Booster's MCP server for AI agents over stdio: diagnostics, signatures, symbol search and JavaScript translation of the projects the Booster compiled (WebSharper 11+)."
+            | Mcp _ -> "Run the Booster's MCP server for AI agents over stdio: diagnostics, signatures, symbol search and JavaScript translation of the projects the Booster compiled (F#: WebSharper 11+, C#: 11.0.0-preview.2+)."
             | Stats _ -> "Show the statistics of the boosters: how long messages, compilation stages and agent tools take (WebSharper 11+)."
             | Build _ -> "Build the WebSharper project in the current folder (or in the nearest parent folder). You can optionally specify a project file using `--project`."
             | Compile _ -> "Compile a given fs(x) file to JavaScript or TypeScript utilizing WebSharper's Booster if enabled"
@@ -122,13 +122,15 @@ and McpArguments =
     | [<AltCommandLine("-p")>] Project of string
     | [<AltCommandLine("-v")>] Version of semver:string
     | [<AltCommandLine("-b")>] Booster of path:string
+    | [<AltCommandLine("-l")>] Lang of lang:string
 
     interface IArgParserTemplate with
         member s.Usage =
             match s with
-            | Project _ -> "Project file or folder whose WebSharper.FSharp version to use. Defaults to the projects in the current folder."
-            | Version _ -> "WebSharper.FSharp version of the Booster to use."
-            | Booster _ -> "Path of a Booster (wsfscservice.dll, its executable or its folder), e.g. a local build of the WebSharper compiler."
+            | Project _ -> "Project file or folder whose WebSharper version and language to use. Defaults to the projects in the current folder."
+            | Version _ -> "WebSharper.FSharp (or, for C#, WebSharper.CSharp) version of the Booster to use."
+            | Booster _ -> "Path of a Booster (wsfscservice.dll or wscscservice.dll, its executable or its folder), e.g. a local build of the WebSharper compiler."
+            | Lang _ -> "fsharp or csharp: the booster of F# (wsfscservice) or C# (wscscservice) projects. Defaults to the language of the project, or of the projects in the folder (F# when both)."
 
 and StatsArguments =
     | [<AltCommandLine("-v")>] Version of semver:string
@@ -298,7 +300,7 @@ let start (startParams: ParseResults<StartArguments>) =
         | _ -> None
     match toolFolder |> Option.orElse (Boosters.tryPortableFolder nugetRoot version) with
     | Some folder ->
-        match Boosters.registered () |> List.tryFind (fun b -> Boosters.sameFolder b.Folder folder) with
+        match Boosters.registered () |> List.tryFind (fun b -> b.Language = Boosters.FSharp && Boosters.sameFolder b.Folder folder) with
         | Some b ->
             PrintHelpers.text 0 "Already running: %s" (CompilerCommand.formatBooster b)
             0
@@ -587,17 +589,22 @@ SUBCOMMANDS:
     list
         List running Booster versions and their source paths.
 
-    mcp [--project <PROJ>] [--version <VER>] [--booster <PATH>]
+    mcp [--project <PROJ>] [--version <VER>] [--booster <PATH>] [--lang <LANG>]
         Run the Booster's MCP server for AI agents over stdio, for the projects
         the Booster compiled: diagnostics, F# signatures, symbol search and
         usages, and how WebSharper translates code to JavaScript. Uses the
         Booster the build uses (the WebSharper.FSharp.Booster tool, or the
         package's), and the agent extensions of the projects' packages.
-        WebSharper 11+.
-          -p, --project <PROJ>   Project file or folder whose WebSharper.FSharp
-                                 version to use (default: the current folder).
-          -v, --version <VER>    WebSharper.FSharp version of the Booster.
-          -b, --booster <PATH>   A Booster build: wsfscservice.dll or its folder.
+        WebSharper 11+. For C# projects it runs the C# booster (wscscservice,
+        WebSharper 11.0.0-preview.2+): WebSharper diagnostics, translations,
+        symbol search and RPC methods of the C# projects built since it started.
+          -p, --project <PROJ>   Project file or folder whose WebSharper version
+                                 and language to use (default: the current folder).
+          -v, --version <VER>    WebSharper.FSharp (or WebSharper.CSharp) version.
+          -b, --booster <PATH>   A Booster build: wsfscservice.dll, wscscservice.dll
+                                 or its folder.
+          -l, --lang <LANG>      fsharp or csharp (default: the projects' language,
+                                 F# when there are both).
 
     stats [--version <VER>] [--json]
         Show the statistics of the boosters (WebSharper 11+): how long each
@@ -688,7 +695,7 @@ let main argv =
         | Stop stopParams ->
             stop stopParams
         | Mcp mcpParams ->
-            McpCommand.run (mcpParams.TryGetResult McpArguments.Booster) (mcpParams.TryGetResult McpArguments.Version) (mcpParams.TryGetResult McpArguments.Project)
+            McpCommand.run (mcpParams.TryGetResult McpArguments.Booster) (mcpParams.TryGetResult McpArguments.Version) (mcpParams.TryGetResult McpArguments.Project) (mcpParams.TryGetResult McpArguments.Lang)
         | Stats statsParams ->
             StatsCommand.run (statsParams.TryGetResult StatsArguments.Version) (statsParams.Contains StatsArguments.Json)
         | List ->
