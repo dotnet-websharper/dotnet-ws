@@ -23,8 +23,10 @@
     <None Include=".gitignore" />
     <None Include="LICENSE.md" />
     <None Include="README.md" />
+    <Compile Include="Boosters.fs" />
     <Compile Include="FileCompile.fs" />
     <Compile Include="BuildInfo.fs" />
+    <Compile Include="CompilerCommand.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 

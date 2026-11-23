@@ -8,7 +8,15 @@ dotnet tool install -g dotnet-ws
 
 # Usage
 
-Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `info`), their options, and examples.
+Run `dotnet ws` or `dotnet ws --help` for the full usage — subcommands (`build`, `compile`, `watch`, `start`, `stop`, `list`, `compiler status`, `compiler sync`, `info`), their options, and examples.
+
+## WebSharper 11 compilers and boosters
+
+From WebSharper 11, the `WebSharper.FSharp` and `WebSharper.CSharp` packages contain the portable compiler, and the faster ReadyToRun compilers come as the optional `WebSharper.FSharp.Booster` and `WebSharper.CSharp.Booster` .NET tools. The build uses a tool when a tool manifest visible from the project (or a global install) has it at exactly the referenced WebSharper version.
+
+- `dotnet ws compiler status` shows which compiler each project builds with and why, and the running boosters.
+- `dotnet ws compiler sync --local` adds the Booster tools at the projects' WebSharper version to the nearest tool manifest (or creates one in the repository root), `--global` installs them globally, and with neither it updates a manifest that already lists them. After a WebSharper update, run `dotnet ws compiler sync` again. Installing the tools needs .NET SDK 10 or newer.
+- `dotnet ws start`, `stop`, `list` and the `build` fast path find WebSharper 11 boosters through the records they write to `websharper-boosters` in the temp folder, whether they run from a Booster tool or from the package (as `dotnet wsfscservice.dll`). Boosters of WebSharper 10 and earlier still work as before; for them, `start` takes `--rid`.
 
 # Dependencies
 
